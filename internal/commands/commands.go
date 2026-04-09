@@ -119,6 +119,9 @@ func (r *Registry) register() {
 	r.add(r.activityCmd())
 	r.add(r.pluginCmd())
 	r.add(r.dispositionCmd())
+	r.add(r.telemetryCmd())
+	r.add(r.senseiCmd())
+	r.add(r.cardCmd())
 }
 
 // fmtAgo formats an RFC3339 timestamp as a human-readable "X ago" string.
@@ -127,6 +130,25 @@ func fmtAgo(ts string) string {
 	if err != nil || ts == "" {
 		return "unknown"
 	}
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds ago", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	}
+}
+
+// fmtUnixAgo formats a unix epoch timestamp (seconds) as a human-readable "X ago" string.
+func fmtUnixAgo(ts int64) string {
+	if ts == 0 {
+		return "unknown"
+	}
+	t := time.Unix(ts, 0)
 	d := time.Since(t)
 	switch {
 	case d < time.Minute:

@@ -98,6 +98,16 @@ func (r *Registry) helpCmd() Command {
 					{"/activity [n]", "show recent activity log entries"},
 					{"/practice", "daily reflection prompts"},
 				}},
+				{"Telemetry", []struct{ cmd, desc string }{
+					{"/telemetry sessions", "recent sessions with cost/token/error data"},
+					{"/telemetry costs", "cost breakdown by provider + 7-day trend"},
+					{"/telemetry tools", "tool call stats: count, latency, success rate"},
+					{"/telemetry summary", "combined overview of all telemetry data"},
+				}},
+				{"Spirit", []struct{ cmd, desc string }{
+					{"/card", "show your dojo profile card"},
+					{"/sensei", "receive wisdom from the sensei"},
+				}},
 			}
 
 			fmt.Println()
