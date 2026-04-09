@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/DojoGenesis/dojo-cli/internal/config"
+	"github.com/DojoGenesis/dojo-cli/internal/spirit"
 )
 
 // State persists across REPL sessions at ~/.dojo/state.json.
@@ -16,6 +17,7 @@ type State struct {
 	LastSessionID string           `json:"last_session_id,omitempty"`
 	SetupComplete bool             `json:"setup_complete,omitempty"`
 	Agents        map[string]Agent `json:"agents,omitempty"` // keyed by agent_id
+	Spirit        spirit.SpiritState `json:"spirit,omitempty"`
 }
 
 // Agent holds metadata about a known agent.
@@ -48,6 +50,9 @@ func Load() (*State, error) {
 	// Ensure the map is initialised even if the JSON had null.
 	if s.Agents == nil {
 		s.Agents = make(map[string]Agent)
+	}
+	if s.Spirit.Unlocked == nil {
+		s.Spirit.Unlocked = make(map[string]string)
 	}
 	return s, nil
 }

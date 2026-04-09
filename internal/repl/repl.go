@@ -19,6 +19,7 @@ import (
 	"github.com/DojoGenesis/dojo-cli/internal/hooks"
 	"github.com/DojoGenesis/dojo-cli/internal/plugins"
 	"github.com/DojoGenesis/dojo-cli/internal/providers"
+	"github.com/DojoGenesis/dojo-cli/internal/spirit"
 	"github.com/DojoGenesis/dojo-cli/internal/state"
 	"github.com/chzyer/readline"
 	gcolor "github.com/gookit/color"
@@ -186,6 +187,76 @@ func (r *REPL) syncProviderKeys(ctx context.Context) {
 func (r *REPL) Run(ctx context.Context) error {
 	printWelcome(r.cfg, r.session, r.resumed)
 
+	// Spirit: streak + session XP
+	if spiritSt, spiritErr := state.Load(); spiritErr == nil {
+		// Set member-since on first use
+		if spiritSt.Spirit.MemberSince == "" {
+			spiritSt.Spirit.MemberSince = time.Now().UTC().Format(time.RFC3339)
+		}
+		// Record session start time (for marathon achievement)
+		spiritSt.Spirit.SessionStart = time.Now().UTC().Format(time.RFC3339)
+		spiritSt.Spirit.TotalSessions++
+
+		// Time-based achievement flags
+		hour := time.Now().Hour()
+		if hour >= 0 && hour < 5 {
+			spiritSt.Spirit.NightOwlSeen = true
+		}
+		if hour >= 5 && hour < 7 {
+			spiritSt.Spirit.EarlyBirdSeen = true
+		}
+
+		// Update streak
+		streakBonus := spirit.UpdateStreak(&spiritSt.Spirit, time.Now())
+		if streakBonus > 0 {
+			spirit.AwardXP(&spiritSt.Spirit, streakBonus)
+		}
+
+		// Award session XP
+		beltedUp, newBelt := spirit.AwardXP(&spiritSt.Spirit, spirit.XPForAction("session_start"))
+
+		// Check achievements
+		newAchievements := spirit.CheckAchievements(&spiritSt.Spirit, time.Now())
+		for _, a := range newAchievements {
+			spirit.AwardXP(&spiritSt.Spirit, a.XPReward)
+		}
+
+		_ = spiritSt.Save()
+
+		// Display streak if > 1
+		if spiritSt.Spirit.StreakDays > 1 {
+			fmt.Printf("  %s%s\n",
+				gcolor.HEX("#94a3b8").Sprintf("%-16s", "streak:"),
+				gcolor.HEX("#ffd166").Sprintf("%d days", spiritSt.Spirit.StreakDays),
+			)
+		}
+
+		// Display belt in welcome
+		belt := spirit.CurrentBelt(spiritSt.Spirit.XP)
+		if spiritSt.Spirit.XP > 0 {
+			fmt.Printf("  %s%s\n",
+				gcolor.HEX("#94a3b8").Sprintf("%-16s", "belt:"),
+				gcolor.HEX(belt.Color).Sprintf("%s %s (%d XP)", belt.Name, belt.Title, spiritSt.Spirit.XP),
+			)
+		}
+
+		if beltedUp {
+			fmt.Println()
+			fmt.Printf("  %s\n", gcolor.HEX("#ffd166").Sprint("BELT PROMOTION"))
+			fmt.Printf("  You are now: %s\n", gcolor.HEX(newBelt.Color).Sprintf("%s %s", newBelt.Name, newBelt.Title))
+			fmt.Printf("  %s\n", gcolor.HEX("#94a3b8").Sprintf("\"%s\"", spirit.BeltQuote(newBelt.Rank)))
+			fmt.Println()
+		}
+		for _, a := range newAchievements {
+			fmt.Printf("  %s %s %s\n",
+				gcolor.HEX("#ffd166").Sprint("Achievement:"),
+				gcolor.HEX("#f4a261").Sprint(a.Icon),
+				gcolor.HEX("#e8b04a").Sprint(a.Name),
+			)
+		}
+		fmt.Println()
+	}
+
 	// Push local API keys to the gateway so cloud providers get registered.
 	r.syncProviderKeys(ctx)
 
@@ -256,6 +327,57 @@ func (r *REPL) handle(ctx context.Context, line string) error {
 			if err := r.runner.Fire(ctx, hooks.EventPostCommand, payload); err != nil {
 				log.Printf("[hooks] PostCommand error: %v", err)
 			}
+
+			// Spirit: award command XP + check for specific action bonuses
+			if spiritSt, spiritErr := state.Load(); spiritErr == nil {
+				spiritSt.Spirit.TotalCommands++
+				spirit.AwardXP(&spiritSt.Spirit, spirit.XPForAction("command_run"))
+
+				// Bonus XP for specific command categories
+				lower := strings.ToLower(line)
+				switch {
+				case strings.HasPrefix(lower, "/agent dispatch"):
+					spiritSt.Spirit.TotalAgents++
+					spirit.AwardXP(&spiritSt.Spirit, spirit.XPForAction("agent_dispatched"))
+				case strings.HasPrefix(lower, "/practice"):
+					spiritSt.Spirit.TotalPractice++
+					spirit.AwardXP(&spiritSt.Spirit, spirit.XPForAction("practice_completed"))
+				case strings.HasPrefix(lower, "/garden plant"):
+					spiritSt.Spirit.TotalSeeds++
+					spirit.AwardXP(&spiritSt.Spirit, spirit.XPForAction("seed_planted"))
+				case strings.HasPrefix(lower, "/plugin install"):
+					spiritSt.Spirit.TotalPlugins++
+					spirit.AwardXP(&spiritSt.Spirit, spirit.XPForAction("plugin_installed"))
+				case strings.HasPrefix(lower, "/project init"):
+					spiritSt.Spirit.TotalProjects++
+					spirit.AwardXP(&spiritSt.Spirit, spirit.XPForAction("project_created"))
+				case strings.HasPrefix(lower, "/skill"):
+					spiritSt.Spirit.TotalSkills++
+					spirit.AwardXP(&spiritSt.Spirit, spirit.XPForAction("skill_invoked"))
+				}
+
+				// Check achievements after all awards
+				newAchievements := spirit.CheckAchievements(&spiritSt.Spirit, time.Now())
+				for _, a := range newAchievements {
+					bUp, nB := spirit.AwardXP(&spiritSt.Spirit, a.XPReward)
+					fmt.Printf("  %s %s %s (+%d XP)\n",
+						gcolor.HEX("#ffd166").Sprint("Achievement:"),
+						gcolor.HEX("#f4a261").Sprint(a.Icon),
+						gcolor.HEX("#e8b04a").Sprint(a.Name),
+						a.XPReward,
+					)
+					if bUp {
+						// inline belt notification
+						fmt.Println()
+						fmt.Printf("  %s\n", gcolor.HEX("#ffd166").Sprint("BELT PROMOTION"))
+						fmt.Printf("  You are now: %s\n", gcolor.HEX(nB.Color).Sprintf("%s %s", nB.Name, nB.Title))
+						fmt.Printf("  %s\n", gcolor.HEX("#94a3b8").Sprintf("\"%s\"", spirit.BeltQuote(nB.Rank)))
+						fmt.Println()
+					}
+				}
+
+				_ = spiritSt.Save()
+			}
 		}
 		return cmdErr
 	}
@@ -303,6 +425,12 @@ func (r *REPL) chat(ctx context.Context, message string) error {
 
 	if fullText.Len() == 0 {
 		fmt.Println(gcolor.HEX("#94a3b8").Sprint("  [no response — the gateway may have encountered an internal error]"))
+	}
+
+	// Spirit: award chat XP
+	if spiritSt, spiritErr := state.Load(); spiritErr == nil {
+		spirit.AwardXP(&spiritSt.Spirit, spirit.XPForAction("chat_message"))
+		_ = spiritSt.Save()
 	}
 
 	r.turns++
@@ -466,6 +594,8 @@ func newReadline(turns int) (*readline.Instance, error) {
 			readline.PcItem("show"),
 			readline.PcItem("create"),
 		),
+		readline.PcItem("/sensei"),
+		readline.PcItem("/card"),
 		readline.PcItem("exit"),
 	)
 
