@@ -3,6 +3,7 @@ package commands
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -12,15 +13,17 @@ import (
 	"github.com/DojoGenesis/dojo-cli/internal/hooks"
 	"github.com/DojoGenesis/dojo-cli/internal/plugins"
 	"github.com/fatih/color"
+	gcolor "github.com/gookit/color"
 )
 
 // Registry maps slash command names to handler functions.
 type Registry struct {
-	cfg    *config.Config
-	gw     *client.Client
-	cmds   map[string]Command
-	plgs   []plugins.Plugin
-	runner *hooks.Runner
+	cfg     *config.Config
+	gw      *client.Client
+	cmds    map[string]Command
+	plgs    []plugins.Plugin
+	runner  *hooks.Runner
+	session *string // pointer to REPL's active session ID
 }
 
 // Command is a callable slash command.
@@ -32,14 +35,16 @@ type Command struct {
 	Run     func(ctx context.Context, args []string) error
 }
 
-// New builds the command registry.
-func New(cfg *config.Config, gw *client.Client, plgs []plugins.Plugin) *Registry {
+// New builds the command registry. session is a pointer to the REPL's active session ID
+// so that /session new and /session <id> can update it across turns.
+func New(cfg *config.Config, gw *client.Client, plgs []plugins.Plugin, session *string) *Registry {
 	r := &Registry{
-		cfg:    cfg,
-		gw:     gw,
-		cmds:   make(map[string]Command),
-		plgs:   plgs,
-		runner: hooks.New(plgs),
+		cfg:     cfg,
+		gw:      gw,
+		cmds:    make(map[string]Command),
+		plgs:    plgs,
+		runner:  hooks.New(plgs),
+		session: session,
 	}
 	r.register()
 	return r
@@ -95,6 +100,8 @@ func (r *Registry) register() {
 	r.add(r.pilotCmd())
 	r.add(r.hooksCmd())
 	r.add(r.settingsCmd())
+	r.add(r.sessionCmd())
+	r.add(r.runCmd())
 }
 
 // ─── /help ────────────────────────────────────────────────────────────────────
@@ -105,10 +112,10 @@ func (r *Registry) helpCmd() Command {
 		Usage: "/help",
 		Short: "List available slash commands",
 		Run: func(ctx context.Context, args []string) error {
-			header := color.New(color.FgGreen, color.Bold)
-			sub := color.New(color.FgHiBlack)
 			fmt.Println()
-			header.Println("Dojo CLI — slash commands")
+			// Section header: warm-amber + bold
+			color.New(color.Bold).Print(gcolor.HEX("#e8b04a").Sprint("Dojo CLI — slash commands"))
+			fmt.Println()
 			fmt.Println()
 			cmds := []struct{ cmd, desc string }{
 				{"/help", "show this message"},
@@ -117,7 +124,13 @@ func (r *Registry) helpCmd() Command {
 				{"/model [ls]", "list available models and providers"},
 				{"/tools [ls]", "list registered MCP tools"},
 				{"/agent ls", "list agents registered in the gateway"},
+				{"/agent dispatch <mode> <msg>", "create agent and stream response"},
+				{"/agent chat <id> <msg>", "chat with existing agent by ID"},
 				{"/skill ls [filter]", "list skills (optionally filter by name)"},
+				{"/session", "show active session ID"},
+				{"/session new", "start a fresh session"},
+				{"/session <id>", "resume a prior session by ID"},
+				{"/run <task>", "submit multi-step orchestration plan"},
 				{"/garden ls", "list memory seeds"},
 				{"/garden stats", "memory garden statistics"},
 				{"/garden plant <text>", "plant a new seed into the garden"},
@@ -129,12 +142,13 @@ func (r *Registry) helpCmd() Command {
 				{"/settings", "show config file path and active settings"},
 			}
 			for _, c := range cmds {
-				fmt.Printf("  %-32s", color.CyanString(c.cmd))
-				sub.Println(c.desc)
+				// Command names in golden-orange, descriptions in cloud-gray
+				fmt.Printf("  %-32s", gcolor.HEX("#f4a261").Sprint(c.cmd))
+				fmt.Println(gcolor.HEX("#94a3b8").Sprint(c.desc))
 			}
 			fmt.Println()
-			fmt.Println("  Type a message without / to chat with the gateway.")
-			fmt.Println("  Ctrl+C or type exit to quit.")
+			fmt.Println(gcolor.HEX("#94a3b8").Sprint("  Type a message without / to chat with the gateway."))
+			fmt.Println(gcolor.HEX("#94a3b8").Sprint("  Ctrl+C or type exit to quit."))
 			fmt.Println()
 			return nil
 		},
@@ -154,17 +168,15 @@ func (r *Registry) healthCmd() Command {
 			if err != nil {
 				return fmt.Errorf("gateway unreachable: %w", err)
 			}
-			label := color.New(color.FgHiBlack)
-			val := color.New(color.FgGreen, color.Bold)
 			fmt.Println()
-			printKV(label, val, "status", h.Status)
-			printKV(label, val, "version", h.Version)
-			printKV(label, val, "uptime", fmt.Sprintf("%ds", h.UptimeSeconds))
-			printKV(label, val, "requests", fmt.Sprintf("%d", h.RequestsProcessed))
+			printKV("status", colorStatus(h.Status))
+			printKV("version", h.Version)
+			printKV("uptime", fmt.Sprintf("%ds", h.UptimeSeconds))
+			printKV("requests", fmt.Sprintf("%d", h.RequestsProcessed))
 			for name, st := range h.Providers {
-				printKV(label, val, "provider/"+name, st)
+				printKV("provider/"+name, colorStatus(st))
 			}
-			printKV(label, val, "gateway", r.cfg.Gateway.URL)
+			printKV("gateway", r.cfg.Gateway.URL)
 			fmt.Println()
 			return nil
 		},
@@ -187,17 +199,17 @@ func (r *Registry) homeCmd() Command {
 			agents, _ := r.gw.Agents(ctx)
 			seeds, _ := r.gw.Seeds(ctx)
 
-			header := color.New(color.FgGreen, color.Bold)
-			dim := color.New(color.FgHiBlack)
-
 			fmt.Println()
-			header.Println("  Dojo Workspace")
-			dim.Printf("  %s\n\n", r.cfg.Gateway.URL)
+			// Section header: warm-amber + bold
+			color.New(color.Bold).Print(gcolor.HEX("#e8b04a").Sprint("  Dojo Workspace"))
+			fmt.Println()
+			fmt.Println(gcolor.HEX("#94a3b8").Sprint("  " + r.cfg.Gateway.URL))
+			fmt.Println()
 
-			fmt.Printf("  %-18s %s\n", color.CyanString("gateway"), colorStatus(h.Status))
-			fmt.Printf("  %-18s %s\n", color.CyanString("agents"), color.WhiteString("%d", len(agents)))
-			fmt.Printf("  %-18s %s\n", color.CyanString("seeds"), color.WhiteString("%d", len(seeds)))
-			fmt.Printf("  %-18s %s\n", color.CyanString("plugins"), color.WhiteString("%d", len(r.plgs)))
+			fmt.Printf("  %-18s %s\n", gcolor.HEX("#f4a261").Sprint("gateway"), colorStatus(h.Status))
+			fmt.Printf("  %-18s %s\n", gcolor.HEX("#f4a261").Sprint("agents"), color.WhiteString("%d", len(agents)))
+			fmt.Printf("  %-18s %s\n", gcolor.HEX("#f4a261").Sprint("seeds"), color.WhiteString("%d", len(seeds)))
+			fmt.Printf("  %-18s %s\n", gcolor.HEX("#f4a261").Sprint("plugins"), color.WhiteString("%d", len(r.plgs)))
 			fmt.Println()
 			return nil
 		},
@@ -221,12 +233,11 @@ func (r *Registry) modelCmd() Command {
 					return fmt.Errorf("could not fetch models: %w", err)
 				}
 				fmt.Println()
-				header := color.New(color.FgGreen, color.Bold)
-				header.Printf("  Models (%d)\n\n", len(models))
+				color.New(color.Bold).Printf(gcolor.HEX("#e8b04a").Sprintf("  Models (%d)\n\n", len(models)))
 				for _, m := range models {
 					fmt.Printf("  %s  %s\n",
-						color.CyanString("%-42s", m.ID),
-						color.HiBlackString(m.Provider),
+						gcolor.HEX("#f4a261").Sprintf("%-42s", m.ID),
+						gcolor.HEX("#94a3b8").Sprint(m.Provider),
 					)
 				}
 				fmt.Println()
@@ -234,15 +245,14 @@ func (r *Registry) modelCmd() Command {
 			}
 
 			fmt.Println()
-			header := color.New(color.FgGreen, color.Bold)
-			header.Printf("  Providers (%d)\n\n", len(providers))
+			color.New(color.Bold).Printf(gcolor.HEX("#e8b04a").Sprintf("  Providers (%d)\n\n", len(providers)))
 			for _, p := range providers {
 				status := colorStatus(p.Status)
 				caps := ""
 				if p.Info != nil && len(p.Info.Capabilities) > 0 {
-					caps = color.HiBlackString(" [%s]", strings.Join(p.Info.Capabilities, ", "))
+					caps = gcolor.HEX("#94a3b8").Sprintf(" [%s]", strings.Join(p.Info.Capabilities, ", "))
 				}
-				fmt.Printf("  %s  %s%s\n", color.CyanString("%-20s", p.Name), status, caps)
+				fmt.Printf("  %s  %s%s\n", gcolor.HEX("#f4a261").Sprintf("%-20s", p.Name), status, caps)
 			}
 			fmt.Println()
 			return nil
@@ -264,8 +274,7 @@ func (r *Registry) toolsCmd() Command {
 				return fmt.Errorf("could not fetch tools: %w", err)
 			}
 			fmt.Println()
-			header := color.New(color.FgGreen, color.Bold)
-			header.Printf("  Tools (%d)\n\n", len(tools))
+			color.New(color.Bold).Printf(gcolor.HEX("#e8b04a").Sprintf("  Tools (%d)\n\n", len(tools)))
 
 			// Group by namespace
 			ns := map[string][]client.Tool{}
@@ -281,11 +290,16 @@ func (r *Registry) toolsCmd() Command {
 				ns[n] = append(ns[n], t)
 			}
 			for _, n := range order {
-				color.New(color.FgYellow).Printf("  [%s]\n", n)
+				// Glass-effect section divider
+				fmt.Printf("  %s %s %s\n",
+					gcolor.HEX("#1a3a4a").Sprint("────"),
+					gcolor.HEX("#e8b04a").Sprint("["+n+"]"),
+					gcolor.HEX("#1a3a4a").Sprint("────"),
+				)
 				for _, t := range ns[n] {
 					fmt.Printf("    %s  %s\n",
-						color.CyanString("%-34s", t.Name),
-						color.HiBlackString(truncate(t.Description, 60)),
+						gcolor.HEX("#f4a261").Sprintf("%-34s", t.Name),
+						gcolor.HEX("#94a3b8").Sprint(truncate(t.Description, 60)),
 					)
 				}
 			}
@@ -301,35 +315,151 @@ func (r *Registry) agentCmd() Command {
 	return Command{
 		Name:    "agent",
 		Aliases: []string{"agents"},
-		Usage:   "/agent ls",
-		Short:   "List agents registered in the gateway",
+		Usage:   "/agent [ls|dispatch <mode> <msg>|chat <id> <msg>]",
+		Short:   "List, create, or chat with agents",
 		Run: func(ctx context.Context, args []string) error {
-			agents, err := r.gw.Agents(ctx)
-			if err != nil {
-				return fmt.Errorf("could not fetch agents: %w", err)
+			sub := "ls"
+			if len(args) > 0 {
+				sub = strings.ToLower(args[0])
 			}
-			fmt.Println()
-			header := color.New(color.FgGreen, color.Bold)
-			header.Printf("  Agents (%d)\n\n", len(agents))
-			if len(agents) == 0 {
-				color.HiBlack("  No agents registered. Start the gateway with agent configs.\n")
+
+			switch sub {
+			case "dispatch":
+				// /agent dispatch [mode] <msg...>
+				// mode is optional — defaults to "balanced"
+				validModes := map[string]bool{
+					"focused": true, "balanced": true,
+					"exploratory": true, "deliberate": true,
+				}
+				mode := "balanced"
+				var msgArgs []string
+				if len(args) >= 2 && validModes[args[1]] {
+					mode = args[1]
+					msgArgs = args[2:]
+				} else {
+					msgArgs = args[1:]
+				}
+				if len(msgArgs) == 0 {
+					return fmt.Errorf("usage: /agent dispatch [focused|balanced|exploratory|deliberate] <message>")
+				}
+				message := strings.Join(msgArgs, " ")
+
+				fmt.Println()
+				fmt.Println(gcolor.HEX("#94a3b8").Sprintf("  Creating agent (mode: %s)...", mode))
+
+				agentResp, err := r.gw.CreateAgent(ctx, client.CreateAgentRequest{
+					WorkspaceRoot: ".",
+					ActiveMode:    mode,
+				})
+				if err != nil {
+					return fmt.Errorf("could not create agent: %w", err)
+				}
+
+				shortID := agentResp.AgentID
+				if len(shortID) > 8 {
+					shortID = shortID[:8]
+				}
+				fmt.Printf("  %s %s",
+					gcolor.HEX("#f4a261").Sprint("Agent:"),
+					gcolor.HEX("#e8b04a").Sprint(shortID),
+				)
+				if agentResp.Disposition != nil {
+					fmt.Printf("  %s", gcolor.HEX("#94a3b8").Sprintf(
+						"pacing=%s depth=%s",
+						agentResp.Disposition.Pacing,
+						agentResp.Disposition.Depth,
+					))
+				}
+				fmt.Println()
+				fmt.Println()
+
+				color.New(color.Bold).Print(gcolor.HEX("#e8b04a").Sprint("  dojo  "))
+				return r.streamAgentChat(ctx, agentResp.AgentID, message)
+
+			case "chat":
+				// /agent chat <id> <msg...>
+				if len(args) < 3 {
+					return fmt.Errorf("usage: /agent chat <agent-id> <message>")
+				}
+				agentID := args[1]
+				message := strings.Join(args[2:], " ")
+				fmt.Println()
+				color.New(color.Bold).Print(gcolor.HEX("#e8b04a").Sprint("  dojo  "))
+				return r.streamAgentChat(ctx, agentID, message)
+
+			default: // ls
+				agents, err := r.gw.Agents(ctx)
+				if err != nil {
+					return fmt.Errorf("could not fetch agents: %w", err)
+				}
+				fmt.Println()
+				color.New(color.Bold).Printf(gcolor.HEX("#e8b04a").Sprintf("  Agents (%d)\n\n", len(agents)))
+				if len(agents) == 0 {
+					fmt.Println(gcolor.HEX("#94a3b8").Sprint("  No agents registered. Start the gateway with agent configs."))
+					fmt.Println()
+					return nil
+				}
+				for _, a := range agents {
+					status := colorStatus(a.Status)
+					fmt.Printf("  %s  %s\n",
+						gcolor.HEX("#f4a261").Sprintf("%-32s", a.AgentID),
+						status,
+					)
+					if a.Disposition != nil {
+						fmt.Println(gcolor.HEX("#94a3b8").Sprintf("    tone=%s pacing=%s", a.Disposition.Tone, a.Disposition.Pacing))
+					}
+				}
 				fmt.Println()
 				return nil
 			}
-			for _, a := range agents {
-				status := colorStatus(a.Status)
-				fmt.Printf("  %s  %s\n",
-					color.CyanString("%-32s", a.AgentID),
-					status,
-				)
-				if a.Disposition != nil {
-					color.HiBlack("    tone=%s pacing=%s\n", a.Disposition.Tone, a.Disposition.Pacing)
-				}
-			}
-			fmt.Println()
-			return nil
 		},
 	}
+}
+
+// streamAgentChat sends a message to an agent and streams the SSE response.
+// Thinking and tool-call events are rendered in dim colors; text is printed inline.
+func (r *Registry) streamAgentChat(ctx context.Context, agentID, message string) error {
+	req := client.AgentChatRequest{
+		Message: message,
+		Stream:  true,
+	}
+
+	err := r.gw.AgentChatStream(ctx, agentID, req, func(chunk client.SSEChunk) {
+		switch chunk.Event {
+		case "thinking":
+			fmt.Print(gcolor.HEX("#94a3b8").Sprint("\n  [Thinking] " + truncate(chunk.Data, 80)))
+		case "tool_call":
+			fmt.Print(gcolor.HEX("#457b9d").Sprintf("\n  [Tool: %s]", truncate(chunk.Data, 60)))
+		case "tool_result":
+			// absorbed into the response
+		default:
+			if text := agentExtractText(chunk.Data); text != "" {
+				fmt.Print(text)
+			}
+		}
+	})
+
+	fmt.Println()
+	fmt.Println()
+	return err
+}
+
+// agentExtractText pulls readable text from an agent SSE data field.
+func agentExtractText(data string) string {
+	data = strings.TrimSpace(data)
+	if data == "" || data == "[DONE]" {
+		return ""
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(data), &m); err == nil {
+		for _, key := range []string{"text", "content", "message", "delta"} {
+			if v, ok := m[key].(string); ok {
+				return v
+			}
+		}
+		return ""
+	}
+	return data
 }
 
 // ─── /skill ──────────────────────────────────────────────────────────────────
@@ -367,15 +497,15 @@ func (r *Registry) skillCmd() Command {
 			}
 
 			fmt.Println()
-			header := color.New(color.FgGreen, color.Bold)
 			if filter != "" {
-				header.Printf("  Skills matching %q (%d)\n\n", filter, len(skills))
+				color.New(color.Bold).Printf(gcolor.HEX("#e8b04a").Sprintf("  Skills matching %q (%d)\n\n", filter, len(skills)))
 			} else {
-				header.Printf("  Skills (%d)\n\n", len(skills))
+				color.New(color.Bold).Printf(gcolor.HEX("#e8b04a").Sprintf("  Skills (%d)\n\n", len(skills)))
 			}
 
 			if len(skills) == 0 {
-				color.HiBlack("  No skills found.\n\n")
+				fmt.Println(gcolor.HEX("#94a3b8").Sprint("  No skills found."))
+				fmt.Println()
 				return nil
 			}
 
@@ -393,14 +523,19 @@ func (r *Registry) skillCmd() Command {
 				cats[cat] = append(cats[cat], s)
 			}
 			for _, cat := range order {
-				color.New(color.FgYellow).Printf("  [%s]\n", cat)
+				// Glass-effect section divider
+				fmt.Printf("  %s %s %s\n",
+					gcolor.HEX("#1a3a4a").Sprint("────"),
+					gcolor.HEX("#e8b04a").Sprint("["+cat+"]"),
+					gcolor.HEX("#1a3a4a").Sprint("────"),
+				)
 				for _, s := range cats[cat] {
 					plugin := ""
 					if s.Plugin != "" {
-						plugin = color.HiBlackString("(%s)", s.Plugin)
+						plugin = gcolor.HEX("#94a3b8").Sprintf("(%s)", s.Plugin)
 					}
 					fmt.Printf("    %s %s\n",
-						color.CyanString("%-40s", s.Name),
+						gcolor.HEX("#f4a261").Sprintf("%-40s", s.Name),
 						plugin,
 					)
 				}
@@ -432,13 +567,11 @@ func (r *Registry) gardenCmd() Command {
 					return fmt.Errorf("could not fetch garden stats: %w", err)
 				}
 				fmt.Println()
-				header := color.New(color.FgGreen, color.Bold)
-				header.Println("  Garden Stats")
+				color.New(color.Bold).Print(gcolor.HEX("#e8b04a").Sprint("  Garden Stats"))
 				fmt.Println()
-				label := color.New(color.FgHiBlack)
-				val := color.New(color.FgWhite)
+				fmt.Println()
 				for k, v := range stats {
-					printKV(label, val, k, fmt.Sprintf("%v", v))
+					printKV(k, fmt.Sprintf("%v", v))
 				}
 				fmt.Println()
 
@@ -458,12 +591,11 @@ func (r *Registry) gardenCmd() Command {
 					return fmt.Errorf("could not plant seed: %w", err)
 				}
 				fmt.Println()
-				color.New(color.FgGreen, color.Bold).Println("  Seed planted")
-				label := color.New(color.FgHiBlack)
-				val := color.New(color.FgWhite)
+				color.New(color.Bold).Print(gcolor.HEX("#7fb88c").Sprint("  Seed planted"))
+				fmt.Println()
 				if seed != nil {
-					printKV(label, val, "id", seed.ID)
-					printKV(label, val, "name", seed.Name)
+					printKV("id", seed.ID)
+					printKV("name", seed.Name)
 				}
 				fmt.Println()
 
@@ -475,16 +607,16 @@ func (r *Registry) gardenCmd() Command {
 					return fmt.Errorf("could not fetch seeds: %w", err)
 				}
 				fmt.Println()
-				header := color.New(color.FgGreen, color.Bold)
-				header.Printf("  Seeds (%d)\n\n", len(seeds))
+				color.New(color.Bold).Printf(gcolor.HEX("#e8b04a").Sprintf("  Seeds (%d)\n\n", len(seeds)))
 				if len(seeds) == 0 {
-					color.HiBlack("  Garden is empty. Use /garden plant <text> to add a seed.\n\n")
+					fmt.Println(gcolor.HEX("#94a3b8").Sprint("  Garden is empty. Use /garden plant <text> to add a seed."))
+					fmt.Println()
 					return nil
 				}
 				for _, s := range seeds {
 					fmt.Printf("  %s  %s\n",
-						color.CyanString("%-44s", s.Name),
-						color.HiBlackString(truncate(s.Content, 50)),
+						gcolor.HEX("#f4a261").Sprintf("%-44s", s.Name),
+						gcolor.HEX("#94a3b8").Sprint(truncate(s.Content, 50)),
 					)
 				}
 				fmt.Println()
@@ -507,15 +639,15 @@ func (r *Registry) trailCmd() Command {
 				return fmt.Errorf("could not fetch memory trail: %w", err)
 			}
 			fmt.Println()
-			header := color.New(color.FgGreen, color.Bold)
-			header.Printf("  Memory Trail (%d)\n\n", len(memories))
+			color.New(color.Bold).Printf(gcolor.HEX("#e8b04a").Sprintf("  Memory Trail (%d)\n\n", len(memories)))
 			if len(memories) == 0 {
-				color.HiBlack("  No memory entries yet.\n\n")
+				fmt.Println(gcolor.HEX("#94a3b8").Sprint("  No memory entries yet."))
+				fmt.Println()
 				return nil
 			}
 			for _, m := range memories {
 				fmt.Printf("  %s  %s\n",
-					color.HiBlackString("%-20s", m.CreatedAt),
+					gcolor.HEX("#94a3b8").Sprintf("%-20s", m.CreatedAt),
 					color.WhiteString(truncate(m.Content, 80)),
 				)
 			}
@@ -534,14 +666,14 @@ func (r *Registry) traceCmd() Command {
 		Short: "Show trace info and guidance",
 		Run: func(ctx context.Context, args []string) error {
 			fmt.Println()
-			header := color.New(color.FgGreen, color.Bold)
-			dim := color.New(color.FgHiBlack)
-			header.Println("  Dojo Trace")
+			color.New(color.Bold).Print(gcolor.HEX("#e8b04a").Sprint("  Dojo Trace"))
 			fmt.Println()
-			dim.Println("  Trace follows the active session's decision and tool-use history.")
-			dim.Println("  Connect the gateway with --trace to enable full trace output.")
 			fmt.Println()
-			printKV(color.New(color.FgHiBlack), color.New(color.FgWhite), "gateway", r.cfg.Gateway.URL)
+			// Trace context in info-steel
+			fmt.Println(gcolor.HEX("#457b9d").Sprint("  Trace follows the active session's decision and tool-use history."))
+			fmt.Println(gcolor.HEX("#457b9d").Sprint("  Connect the gateway with --trace to enable full trace output."))
+			fmt.Println()
+			printKV("gateway", r.cfg.Gateway.URL)
 			fmt.Println()
 			return nil
 		},
@@ -557,11 +689,13 @@ func (r *Registry) pilotCmd() Command {
 		Short: "Live SSE event stream (Ctrl+C to stop)",
 		Run: func(ctx context.Context, args []string) error {
 			fmt.Println()
-			color.New(color.FgGreen, color.Bold).Println("  Pilot — live event stream  (Ctrl+C to stop)")
+			color.New(color.Bold).Print(gcolor.HEX("#e8b04a").Sprint("  Pilot — live event stream  (Ctrl+C to stop)"))
+			fmt.Println()
 			fmt.Println()
 
 			clientID := fmt.Sprintf("dojo-cli-%d", time.Now().UnixMilli())
-			color.HiBlack("  client_id: %s\n\n", clientID)
+			fmt.Println(gcolor.HEX("#94a3b8").Sprintf("  client_id: %s", clientID))
+			fmt.Println()
 
 			return r.gw.PilotStream(ctx, clientID, func(chunk client.SSEChunk) {
 				ev := chunk.Event
@@ -569,7 +703,8 @@ func (r *Registry) pilotCmd() Command {
 					ev = "message"
 				}
 				fmt.Printf("  %s  %s\n",
-					color.YellowString("%-16s", ev),
+					// Pilot events in info-steel
+					gcolor.HEX("#457b9d").Sprintf("%-16s", ev),
 					color.WhiteString(truncate(chunk.Data, 100)),
 				)
 			})
@@ -600,7 +735,7 @@ func (r *Registry) hooksCmd() Command {
 				if err := r.runner.Fire(ctx, event, nil); err != nil {
 					return fmt.Errorf("hook fire error: %w", err)
 				}
-				color.New(color.FgGreen).Println("  done")
+				fmt.Println(gcolor.HEX("#7fb88c").Sprint("  done"))
 				fmt.Println()
 
 			default: // ls
@@ -611,11 +746,11 @@ func (r *Registry) hooksCmd() Command {
 				}
 
 				fmt.Println()
-				header := color.New(color.FgGreen, color.Bold)
-				header.Printf("  Hooks (%d rules across %d plugins)\n\n", totalRules, len(r.plgs))
+				color.New(color.Bold).Printf(gcolor.HEX("#e8b04a").Sprintf("  Hooks (%d rules across %d plugins)\n\n", totalRules, len(r.plgs)))
 
 				if totalRules == 0 {
-					color.HiBlack("  No hook rules loaded. Place plugins in %s\n\n", r.cfg.Plugins.Path)
+					fmt.Println(gcolor.HEX("#94a3b8").Sprintf("  No hook rules loaded. Place plugins in %s", r.cfg.Plugins.Path))
+					fmt.Println()
 					return nil
 				}
 
@@ -623,12 +758,17 @@ func (r *Registry) hooksCmd() Command {
 					if len(p.HookRules) == 0 {
 						continue
 					}
-					color.New(color.FgYellow).Printf("  [%s]\n", p.Name)
+					// Glass-effect section divider
+					fmt.Printf("  %s %s %s\n",
+						gcolor.HEX("#1a3a4a").Sprint("────"),
+						gcolor.HEX("#e8b04a").Sprint("["+p.Name+"]"),
+						gcolor.HEX("#1a3a4a").Sprint("────"),
+					)
 					for _, rule := range p.HookRules {
 						for _, h := range rule.Hooks {
 							asyncLabel := ""
 							if h.Async {
-								asyncLabel = color.HiBlackString("  (async)")
+								asyncLabel = gcolor.HEX("#94a3b8").Sprint("  (async)")
 							}
 							cmd := h.Command
 							if cmd == "" {
@@ -638,9 +778,9 @@ func (r *Registry) hooksCmd() Command {
 								cmd = h.URL
 							}
 							fmt.Printf("    %s  %s  %s%s\n",
-								color.CyanString("%-20s", rule.Event),
+								gcolor.HEX("#f4a261").Sprintf("%-20s", rule.Event),
 								color.WhiteString("%-10s", h.Type),
-								color.HiBlackString(truncate(cmd, 50)),
+								gcolor.HEX("#94a3b8").Sprint(truncate(cmd, 50)),
 								asyncLabel,
 							)
 						}
@@ -662,30 +802,157 @@ func (r *Registry) settingsCmd() Command {
 		Usage:   "/settings",
 		Short:   "Show active config and settings file path",
 		Run: func(ctx context.Context, args []string) error {
-			label := color.New(color.FgHiBlack)
-			val := color.New(color.FgWhite)
 			fmt.Println()
-			color.New(color.FgGreen, color.Bold).Println("  Active Settings")
+			color.New(color.Bold).Print(gcolor.HEX("#e8b04a").Sprint("  Active Settings"))
 			fmt.Println()
-			printKV(label, val, "config file", config.SettingsPath())
-			printKV(label, val, "gateway.url", r.cfg.Gateway.URL)
-			printKV(label, val, "gateway.timeout", r.cfg.Gateway.Timeout)
-			printKV(label, val, "plugins.path", r.cfg.Plugins.Path)
-			printKV(label, val, "plugins loaded", fmt.Sprintf("%d", len(r.plgs)))
-			printKV(label, val, "defaults.provider", orDefault(r.cfg.Defaults.Provider, "(auto)"))
-			printKV(label, val, "defaults.disposition", r.cfg.Defaults.Disposition)
-			printKV(label, val, "defaults.model", orDefault(r.cfg.Defaults.Model, "(auto)"))
+			fmt.Println()
+			printKV("config file", config.SettingsPath())
+			printKV("gateway.url", r.cfg.Gateway.URL)
+			printKV("gateway.timeout", r.cfg.Gateway.Timeout)
+			printKV("plugins.path", r.cfg.Plugins.Path)
+			printKV("plugins loaded", fmt.Sprintf("%d", len(r.plgs)))
+			printKV("defaults.provider", orDefault(r.cfg.Defaults.Provider, "(auto)"))
+			printKV("defaults.disposition", r.cfg.Defaults.Disposition)
+			printKV("defaults.model", orDefault(r.cfg.Defaults.Model, "(auto)"))
 			fmt.Println()
 			return nil
 		},
 	}
 }
 
+// ─── /session ────────────────────────────────────────────────────────────────
+
+func (r *Registry) sessionCmd() Command {
+	return Command{
+		Name:  "session",
+		Usage: "/session [new|<id>]",
+		Short: "Show or change the active session ID",
+		Run: func(ctx context.Context, args []string) error {
+			if len(args) == 0 {
+				fmt.Println()
+				printKV("session", *r.session)
+				fmt.Println()
+				return nil
+			}
+			switch args[0] {
+			case "new":
+				*r.session = fmt.Sprintf("dojo-cli-%s", time.Now().Format("20060102-150405"))
+				fmt.Println()
+				fmt.Println(gcolor.HEX("#7fb88c").Sprint("  New session started"))
+				printKV("session", *r.session)
+				fmt.Println()
+			default:
+				*r.session = args[0]
+				fmt.Println()
+				fmt.Println(gcolor.HEX("#7fb88c").Sprint("  Session resumed"))
+				printKV("session", *r.session)
+				fmt.Println()
+			}
+			return nil
+		},
+	}
+}
+
+// ─── /run ─────────────────────────────────────────────────────────────────────
+
+func (r *Registry) runCmd() Command {
+	return Command{
+		Name:  "run",
+		Usage: "/run <task description>",
+		Short: "Submit a multi-step orchestration plan and watch it execute",
+		Run: func(ctx context.Context, args []string) error {
+			if len(args) == 0 {
+				return fmt.Errorf("usage: /run <task description>")
+			}
+			task := strings.Join(args, " ")
+			planID := fmt.Sprintf("plan-%d", time.Now().UnixMilli())
+
+			req := client.OrchestrateRequest{
+				Plan: client.ExecutionPlan{
+					ID:   planID,
+					Name: task,
+					DAG: []client.ToolInvocation{
+						{
+							ID:        "step1",
+							ToolName:  "chat",
+							Input:     map[string]any{"message": task, "session_id": *r.session},
+							DependsOn: []string{},
+						},
+					},
+				},
+			}
+
+			fmt.Println()
+			fmt.Println(gcolor.HEX("#94a3b8").Sprintf("  Submitting plan: %s", truncate(task, 60)))
+
+			status, err := r.gw.Orchestrate(ctx, req)
+			if err != nil {
+				return fmt.Errorf("orchestration failed: %w", err)
+			}
+
+			printKV("execution_id", status.ExecutionID)
+			printKV("status", colorStatus(status.Status))
+			fmt.Println()
+
+			// Poll every second until completed or failed.
+			seen := map[string]string{} // node id → last printed status
+			ticker := time.NewTicker(time.Second)
+			defer ticker.Stop()
+
+			for {
+				select {
+				case <-ctx.Done():
+					return nil
+				case <-ticker.C:
+					dag, err := r.gw.OrchestrationDAG(ctx, status.ExecutionID)
+					if err != nil {
+						fmt.Println(gcolor.HEX("#e63946").Sprint("  poll error: " + err.Error()))
+						continue
+					}
+
+					for _, node := range dag.Nodes {
+						id, _ := node["id"].(string)
+						st, _ := node["status"].(string)
+						if id == "" || seen[id] == st {
+							continue
+						}
+						seen[id] = st
+
+						icon := "○"
+						switch st {
+						case "completed":
+							icon = gcolor.HEX("#7fb88c").Sprint("✓")
+						case "running":
+							icon = gcolor.HEX("#e8b04a").Sprint("⟳")
+						case "failed":
+							icon = gcolor.HEX("#e63946").Sprint("✗")
+						}
+
+						line := fmt.Sprintf("  [%s %s] %s", icon, gcolor.HEX("#f4a261").Sprint(id), colorStatus(st))
+						if out, _ := node["output"].(string); out != "" {
+							line += "  " + gcolor.HEX("#94a3b8").Sprint(truncate(out, 60))
+						}
+						fmt.Println(line)
+					}
+
+					if dag.Status == "completed" || dag.Status == "failed" {
+						fmt.Printf("\n  %s\n\n", colorStatus(dag.Status))
+						return nil
+					}
+				}
+			}
+		},
+	}
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-func printKV(label, val *color.Color, key, value string) {
-	label.Printf("  %-24s", key)
-	val.Println(value)
+// printKV prints a key-value pair: key in cloud-gray, value in white.
+func printKV(key, value string) {
+	fmt.Printf("%s%s\n",
+		gcolor.HEX("#94a3b8").Sprintf("  %-24s", key),
+		color.WhiteString(value),
+	)
 }
 
 func truncate(s string, n int) string {
@@ -698,13 +965,13 @@ func truncate(s string, n int) string {
 func colorStatus(s string) string {
 	switch strings.ToLower(s) {
 	case "ok", "healthy", "active", "running", "ready":
-		return color.GreenString(s)
+		return gcolor.HEX("#7fb88c").Sprint(s) // soft-sage
 	case "loading", "starting":
-		return color.YellowString(s)
+		return gcolor.HEX("#e8b04a").Sprint(s) // warm-amber
 	case "", "unknown":
-		return color.HiBlackString("unknown")
+		return gcolor.HEX("#94a3b8").Sprint("unknown") // cloud-gray
 	default:
-		return color.RedString(s)
+		return gcolor.HEX("#e63946").Sprint(s) // danger-red
 	}
 }
 

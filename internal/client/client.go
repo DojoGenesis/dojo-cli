@@ -436,6 +436,137 @@ func (c *Client) PilotStream(ctx context.Context, clientID string, onChunk func(
 	return parseSSE(resp.Body, onChunk)
 }
 
+// ─── Agent creation (Spec 2) ─────────────────────────────────────────────────
+
+// CreateAgentRequest is the body for POST /v1/gateway/agents.
+type CreateAgentRequest struct {
+	WorkspaceRoot string `json:"workspace_root"`
+	ActiveMode    string `json:"active_mode,omitempty"` // "focused"|"balanced"|"exploratory"|"deliberate"
+}
+
+// CreateAgentResponse is the response from POST /v1/gateway/agents.
+type CreateAgentResponse struct {
+	AgentID     string            `json:"agent_id"`
+	Status      string            `json:"status"`
+	Disposition *AgentDisposition `json:"disposition,omitempty"`
+}
+
+// CreateAgent creates a new agent in the gateway and returns its ID.
+func (c *Client) CreateAgent(ctx context.Context, req CreateAgentRequest) (*CreateAgentResponse, error) {
+	if req.WorkspaceRoot == "" {
+		req.WorkspaceRoot = "."
+	}
+	var r CreateAgentResponse
+	if err := c.post(ctx, "/v1/gateway/agents", req, &r); err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
+// ─── Agent chat streaming (Spec 2) ───────────────────────────────────────────
+
+// AgentChatRequest is the body for POST /v1/gateway/agents/:id/chat.
+type AgentChatRequest struct {
+	Message         string `json:"message"`
+	UserID          string `json:"user_id,omitempty"`
+	DocumentID      string `json:"document_id,omitempty"`
+	DocumentContent string `json:"document_content,omitempty"`
+	Stream          bool   `json:"stream"`
+}
+
+// AgentChatStream sends a message to a specific agent and streams the SSE response.
+// agentID is the UUID returned by CreateAgent. Same SSEChunk callback as ChatStream.
+func (c *Client) AgentChatStream(ctx context.Context, agentID string, req AgentChatRequest, onChunk func(SSEChunk)) error {
+	req.Stream = true
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		return err
+	}
+
+	path := "/v1/gateway/agents/" + agentID + "/chat"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+path, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "text/event-stream")
+	if c.token != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("gateway returned %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+
+	return parseSSE(resp.Body, onChunk)
+}
+
+// ─── Orchestration submission (Spec 3) ───────────────────────────────────────
+
+// ToolInvocation is a single node in an orchestration DAG.
+type ToolInvocation struct {
+	ID        string         `json:"id"`
+	ToolName  string         `json:"tool_name"`
+	Input     map[string]any `json:"input"`
+	DependsOn []string       `json:"depends_on,omitempty"`
+}
+
+// ExecutionPlan is the plan submitted to /v1/gateway/orchestrate.
+type ExecutionPlan struct {
+	ID   string           `json:"id"`
+	Name string           `json:"name"`
+	DAG  []ToolInvocation `json:"dag"`
+}
+
+// OrchestrateRequest is the body for POST /v1/gateway/orchestrate.
+type OrchestrateRequest struct {
+	Plan   ExecutionPlan `json:"plan"`
+	UserID string        `json:"user_id,omitempty"`
+}
+
+// OrchestrationStatus is returned by POST /v1/gateway/orchestrate.
+type OrchestrationStatus struct {
+	ExecutionID string `json:"execution_id"`
+	PlanID      string `json:"plan_id"`
+	Status      string `json:"status"` // "submitted"
+}
+
+// Orchestrate submits an execution plan to the gateway (async — returns immediately).
+func (c *Client) Orchestrate(ctx context.Context, req OrchestrateRequest) (*OrchestrationStatus, error) {
+	var r OrchestrationStatus
+	if err := c.post(ctx, "/v1/gateway/orchestrate", req, &r); err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
+// ─── DAG status polling (Spec 3) ─────────────────────────────────────────────
+
+// DAGStatus is the response from GET /v1/gateway/orchestrate/:id/dag.
+type DAGStatus struct {
+	ExecutionID string           `json:"execution_id"`
+	Status      string           `json:"status"` // "running"|"completed"|"failed"
+	PlanID      string           `json:"plan_id"`
+	Nodes       []map[string]any `json:"nodes,omitempty"`
+}
+
+// OrchestrationDAG polls the DAG state for an execution.
+func (c *Client) OrchestrationDAG(ctx context.Context, executionID string) (*DAGStatus, error) {
+	var r DAGStatus
+	if err := c.get(ctx, "/v1/gateway/orchestrate/"+executionID+"/dag", &r); err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
 // ─── HTTP helpers ─────────────────────────────────────────────────────────────
 
 func (c *Client) get(ctx context.Context, path string, out any) error {
@@ -484,7 +615,7 @@ func (c *Client) post(ctx context.Context, path string, body any, out any) error
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusAccepted {
 		rb, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("gateway %s returned %d: %s", path, resp.StatusCode, strings.TrimSpace(string(rb)))
 	}

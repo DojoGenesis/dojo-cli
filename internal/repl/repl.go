@@ -19,6 +19,7 @@ import (
 	"github.com/DojoGenesis/dojo-cli/internal/plugins"
 	"github.com/chzyer/readline"
 	"github.com/fatih/color"
+	gcolor "github.com/gookit/color"
 )
 
 // REPL is the interactive session.
@@ -28,6 +29,7 @@ type REPL struct {
 	registry *commands.Registry
 	runner   *hooks.Runner
 	session  string // active session ID
+	turns    int    // number of successful chat turns
 }
 
 // New creates a REPL bound to the given config and gateway client.
@@ -43,22 +45,98 @@ func New(cfg *config.Config, gw *client.Client) *REPL {
 		log.Printf("[repl] loaded %d plugin(s) from %s", len(plgs), cfg.Plugins.Path)
 	}
 
-	session := fmt.Sprintf("dojo-cli-%s", time.Now().Format("20060102-150405"))
-	reg := commands.New(cfg, gw, plgs)
-	return &REPL{
-		cfg:      cfg,
-		gw:       gw,
-		session:  session,
-		registry: reg,
-		runner:   reg.Runner(),
+	r := &REPL{
+		cfg:   cfg,
+		gw:    gw,
+		turns: 0,
 	}
+	r.session = fmt.Sprintf("dojo-cli-%s", time.Now().Format("20060102-150405"))
+	reg := commands.New(cfg, gw, plgs, &r.session)
+	r.registry = reg
+	r.runner = reg.Runner()
+	return r
+}
+
+// vitalityPrompt returns a colored prompt string based on the number of turns.
+// 0 turns: neutral-dark dot + cloud-gray "dojo"
+// 1–4 turns: warm-amber dot + golden-orange "dojo"
+// 5+ turns: golden-orange dot + golden-orange bold "dojo"
+func vitalityPrompt(turns int) string {
+	sep := gcolor.HEX("#94a3b8").Sprint(" › ")
+	switch {
+	case turns == 0:
+		dot := gcolor.HEX("#1a3a4a").Sprint("●")
+		name := gcolor.HEX("#94a3b8").Sprint("dojo")
+		return dot + " " + name + sep
+	case turns < 5:
+		dot := gcolor.HEX("#e8b04a").Sprint("●")
+		name := gcolor.HEX("#f4a261").Sprint("dojo")
+		return dot + " " + name + sep
+	default:
+		dot := gcolor.HEX("#f4a261").Sprint("●")
+		name := color.New(color.Bold).Sprint(gcolor.HEX("#f4a261").Sprint("dojo"))
+		return dot + " " + name + sep
+	}
+}
+
+// sunsetWordmark renders text character-by-character with a linear gradient
+// from #ffd166 → #f4a261 → #e76f51.
+func sunsetWordmark(text string) string {
+	runes := []rune(text)
+	n := len(runes)
+	if n == 0 {
+		return ""
+	}
+
+	// Three gradient stops
+	type rgb struct{ r, g, b uint8 }
+	stops := []rgb{
+		{0xff, 0xd1, 0x66}, // #ffd166
+		{0xf4, 0xa2, 0x61}, // #f4a261
+		{0xe7, 0x6f, 0x51}, // #e76f51
+	}
+
+	lerp := func(a, b uint8, t float64) uint8 {
+		return uint8(float64(a) + t*(float64(b)-float64(a)))
+	}
+
+	colorAt := func(i int) rgb {
+		if n == 1 {
+			return stops[0]
+		}
+		// Map i in [0, n-1] to t in [0, 1]
+		t := float64(i) / float64(n-1)
+		// Two segments: [stop0→stop1] for t in [0, 0.5], [stop1→stop2] for t in [0.5, 1]
+		if t <= 0.5 {
+			seg := t / 0.5
+			return rgb{
+				lerp(stops[0].r, stops[1].r, seg),
+				lerp(stops[0].g, stops[1].g, seg),
+				lerp(stops[0].b, stops[1].b, seg),
+			}
+		}
+		seg := (t - 0.5) / 0.5
+		return rgb{
+			lerp(stops[1].r, stops[2].r, seg),
+			lerp(stops[1].g, stops[2].g, seg),
+			lerp(stops[1].b, stops[2].b, seg),
+		}
+	}
+
+	var out strings.Builder
+	for i, ch := range runes {
+		c := colorAt(i)
+		hex := fmt.Sprintf("#%02x%02x%02x", c.r, c.g, c.b)
+		out.WriteString(gcolor.HEX(hex).Sprint(string(ch)))
+	}
+	return out.String()
 }
 
 // Run starts the interactive loop. Returns when the user exits.
 func (r *REPL) Run(ctx context.Context) error {
 	printWelcome(r.cfg, r.session)
 
-	rl, err := newReadline()
+	rl, err := newReadline(r.turns)
 	if err != nil {
 		// Fallback to plain stdin if readline init fails (e.g. in pipes)
 		return r.runPlain(ctx)
@@ -71,6 +149,9 @@ func (r *REPL) Run(ctx context.Context) error {
 			return nil
 		default:
 		}
+
+		// Update prompt to reflect current vitality
+		rl.SetPrompt(vitalityPrompt(r.turns))
 
 		line, err := rl.Readline()
 		if err != nil {
@@ -133,8 +214,8 @@ func (r *REPL) chat(ctx context.Context, message string) error {
 	}
 
 	fmt.Println()
-	prefix := color.New(color.FgGreen, color.Bold)
-	prefix.Print("  dojo  ")
+	prefix := color.New(color.Bold)
+	prefix.Print(gcolor.HEX("#e8b04a").Sprint("  dojo  "))
 
 	var fullText strings.Builder
 	err := r.gw.ChatStream(ctx, req, func(chunk client.SSEChunk) {
@@ -147,6 +228,11 @@ func (r *REPL) chat(ctx context.Context, message string) error {
 
 	fmt.Println()
 	fmt.Println()
+
+	if err == nil {
+		r.turns++
+	}
+
 	return err
 }
 
@@ -212,15 +298,28 @@ func (r *REPL) runPlain(ctx context.Context) error {
 
 // ─── readline setup ──────────────────────────────────────────────────────────
 
-func newReadline() (*readline.Instance, error) {
+func newReadline(turns int) (*readline.Instance, error) {
 	completer := readline.NewPrefixCompleter(
 		readline.PcItem("/help"),
 		readline.PcItem("/health"),
 		readline.PcItem("/home"),
 		readline.PcItem("/model"),
 		readline.PcItem("/tools"),
-		readline.PcItem("/agent", readline.PcItem("ls")),
+		readline.PcItem("/agent",
+			readline.PcItem("ls"),
+			readline.PcItem("dispatch",
+				readline.PcItem("focused"),
+				readline.PcItem("balanced"),
+				readline.PcItem("exploratory"),
+				readline.PcItem("deliberate"),
+			),
+			readline.PcItem("chat"),
+		),
 		readline.PcItem("/skill", readline.PcItem("ls")),
+		readline.PcItem("/session",
+			readline.PcItem("new"),
+		),
+		readline.PcItem("/run"),
 		readline.PcItem("/garden",
 			readline.PcItem("ls"),
 			readline.PcItem("stats"),
@@ -239,7 +338,7 @@ func newReadline() (*readline.Instance, error) {
 	)
 
 	return readline.NewEx(&readline.Config{
-		Prompt:          color.GreenString("dojo") + color.HiBlackString(" › "),
+		Prompt:          vitalityPrompt(turns),
 		HistoryFile:     historyPath(),
 		AutoComplete:    completer,
 		InterruptPrompt: "^C",
@@ -255,12 +354,38 @@ func historyPath() string {
 // ─── Welcome banner ──────────────────────────────────────────────────────────
 
 func printWelcome(cfg *config.Config, session string) {
-	green := color.New(color.FgGreen, color.Bold)
-	dim := color.New(color.FgHiBlack)
 	fmt.Println()
-	green.Println("  Dojo CLI")
-	dim.Printf("  gateway: %s\n", cfg.Gateway.URL)
-	dim.Printf("  session: %s\n", session)
-	dim.Println("  type /help for commands, /health to check the gateway")
+
+	// Sunset gradient wordmark
+	fmt.Println(sunsetWordmark("  Dojo CLI"))
+
+	// Session line: label in cloud-gray, value in warm-amber
+	fmt.Printf("%s%s\n",
+		gcolor.HEX("#94a3b8").Sprint("  session: "),
+		gcolor.HEX("#e8b04a").Sprint(session),
+	)
+
+	// Gateway line: label in cloud-gray, value in neutral-dark
+	fmt.Printf("%s%s\n",
+		gcolor.HEX("#94a3b8").Sprint("  gateway: "),
+		gcolor.HEX("#1a3a4a").Sprint(cfg.Gateway.URL),
+	)
+
+	// Hint line: cloud-gray
+	gcolor.HEX("#94a3b8").Println("  type /help for commands, /health to check the gateway")
+
+	// JetBrains Mono one-time tip
+	home, _ := os.UserHomeDir()
+	hintFile := home + "/.dojo/.mono-hint"
+	if _, err := os.Stat(hintFile); os.IsNotExist(err) {
+		gcolor.HEX("#94a3b8").Println("  tip: set terminal font to JetBrains Mono for best rendering")
+		// Create the marker file so the tip never shows again
+		_ = os.MkdirAll(home+"/.dojo", 0o755)
+		f, ferr := os.Create(hintFile)
+		if ferr == nil {
+			f.Close()
+		}
+	}
+
 	fmt.Println()
 }
