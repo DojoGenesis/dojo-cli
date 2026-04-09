@@ -12,6 +12,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/DojoGenesis/dojo-cli/internal/trace"
 )
 
 // Client talks to an AgenticGateway instance.
@@ -29,10 +31,15 @@ func New(baseURL, token, timeout string) *Client {
 		d = 60 * time.Second
 	}
 	return &Client{
-		base:       strings.TrimRight(baseURL, "/"),
-		token:      token,
-		http:       &http.Client{Timeout: d},
-		streamHTTP: &http.Client{}, // no timeout for long-lived SSE
+		base:  strings.TrimRight(baseURL, "/"),
+		token: token,
+		http: &http.Client{
+			Timeout:   d,
+			Transport: trace.NewRoundTripper(nil, nil),
+		},
+		streamHTTP: &http.Client{
+			Transport: trace.NewRoundTripper(nil, nil),
+		},
 	}
 }
 
@@ -833,6 +840,234 @@ func (c *Client) SetProviderKey(ctx context.Context, provider, apiKey string) er
 func (c *Client) GetProviderSettings(ctx context.Context) (map[string]any, error) {
 	var r map[string]any
 	if err := c.get(ctx, "/v1/settings/providers", &r); err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+// ─── MCP Apps ───────────────────────────────────────────────────────────────
+
+// App represents a running MCP app.
+type App struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
+	Tools  int    `json:"tools,omitempty"`
+}
+
+type appsEnvelope struct {
+	Apps []App `json:"apps"`
+}
+
+// LaunchAppRequest is the body for POST /v1/gateway/apps/launch.
+type LaunchAppRequest struct {
+	Name   string         `json:"name"`
+	Config map[string]any `json:"config,omitempty"`
+}
+
+// LaunchApp starts an MCP app server.
+func (c *Client) LaunchApp(ctx context.Context, name string, config map[string]any) error {
+	req := LaunchAppRequest{Name: name, Config: config}
+	var r map[string]any
+	return c.post(ctx, "/v1/gateway/apps/launch", req, &r)
+}
+
+// CloseAppRequest is the body for POST /v1/gateway/apps/close.
+type CloseAppRequest struct {
+	Name string `json:"name"`
+}
+
+// CloseApp stops an MCP app server.
+func (c *Client) CloseApp(ctx context.Context, name string) error {
+	req := CloseAppRequest{Name: name}
+	var r map[string]any
+	return c.post(ctx, "/v1/gateway/apps/close", req, &r)
+}
+
+// ListApps fetches running MCP apps.
+func (c *Client) ListApps(ctx context.Context) ([]App, error) {
+	var r appsEnvelope
+	if err := c.get(ctx, "/v1/gateway/apps", &r); err != nil {
+		return nil, err
+	}
+	return r.Apps, nil
+}
+
+// AppStatus fetches MCP app connection status.
+func (c *Client) AppStatus(ctx context.Context) (map[string]any, error) {
+	var r map[string]any
+	if err := c.get(ctx, "/v1/gateway/apps/status", &r); err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+// ProxyToolCallRequest is the body for POST /v1/gateway/apps/tool-call.
+type ProxyToolCallRequest struct {
+	App      string         `json:"app"`
+	ToolName string         `json:"tool_name"`
+	Input    map[string]any `json:"input"`
+}
+
+// ProxyToolCall invokes a tool through an MCP app.
+func (c *Client) ProxyToolCall(ctx context.Context, app, tool string, input map[string]any) (map[string]any, error) {
+	req := ProxyToolCallRequest{App: app, ToolName: tool, Input: input}
+	var r map[string]any
+	if err := c.post(ctx, "/v1/gateway/apps/tool-call", req, &r); err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+// ─── Agent Channels ─────────────────────────────────────────────────────────
+
+// BindChannelsRequest is the body for POST /v1/gateway/agents/:id/channels.
+type BindChannelsRequest struct {
+	Channels []string `json:"channels"`
+}
+
+// BindAgentChannels binds an agent to one or more channels.
+func (c *Client) BindAgentChannels(ctx context.Context, agentID string, channels []string) error {
+	req := BindChannelsRequest{Channels: channels}
+	var r map[string]any
+	return c.post(ctx, "/v1/gateway/agents/"+agentID+"/channels", req, &r)
+}
+
+// ListAgentChannels fetches channels bound to an agent.
+func (c *Client) ListAgentChannels(ctx context.Context, agentID string) ([]string, error) {
+	var r struct {
+		Channels []string `json:"channels"`
+	}
+	if err := c.get(ctx, "/v1/gateway/agents/"+agentID+"/channels", &r); err != nil {
+		return nil, err
+	}
+	return r.Channels, nil
+}
+
+// UnbindAgentChannel removes a channel binding from an agent.
+func (c *Client) UnbindAgentChannel(ctx context.Context, agentID, channel string) error {
+	return c.delete(ctx, "/v1/gateway/agents/"+agentID+"/channels/"+channel)
+}
+
+// AgentDetail is the full detail response for GET /v1/gateway/agents/:id.
+type AgentDetail struct {
+	AgentID     string            `json:"agent_id"`
+	Status      string            `json:"status"`
+	Disposition *AgentDisposition `json:"disposition,omitempty"`
+	Channels    []string          `json:"channels,omitempty"`
+	Config      map[string]any    `json:"config,omitempty"`
+	CreatedAt   string            `json:"created_at,omitempty"`
+}
+
+// GetAgent fetches full details for a specific agent.
+func (c *Client) GetAgent(ctx context.Context, agentID string) (*AgentDetail, error) {
+	var r AgentDetail
+	if err := c.get(ctx, "/v1/gateway/agents/"+agentID, &r); err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
+// ─── Workflows ──────────────────────────────────────────────────────────────
+
+// ExecuteWorkflowRequest is the body for POST /api/workflows/:name/execute.
+type ExecuteWorkflowRequest struct {
+	Input map[string]any `json:"input,omitempty"`
+}
+
+// ExecuteWorkflowResponse is the response from workflow execution.
+type ExecuteWorkflowResponse struct {
+	RunID  string `json:"run_id"`
+	Status string `json:"status"`
+}
+
+// ExecuteWorkflow starts a named workflow and returns the run ID.
+func (c *Client) ExecuteWorkflow(ctx context.Context, name string, input map[string]any) (*ExecuteWorkflowResponse, error) {
+	req := ExecuteWorkflowRequest{Input: input}
+	var r ExecuteWorkflowResponse
+	if err := c.post(ctx, "/api/workflows/"+name+"/execute", req, &r); err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
+// WorkflowExecutionStream streams workflow execution events via SSE.
+func (c *Client) WorkflowExecutionStream(ctx context.Context, runID string, onChunk func(SSEChunk)) error {
+	path := "/api/workflows/" + runID + "/execution"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	resp, err := c.streamHTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("gateway returned %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	return parseSSE(resp.Body, onChunk)
+}
+
+// ─── CAS (Content-Addressable Storage) ──────────────────────────────────────
+
+// CASTag represents a named tag in the CAS.
+type CASTag struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+	Ref     string `json:"ref"`
+}
+
+type casTagsEnvelope struct {
+	Tags []CASTag `json:"tags"`
+}
+
+// CASListTags fetches all CAS tags.
+func (c *Client) CASListTags(ctx context.Context) ([]CASTag, error) {
+	var r casTagsEnvelope
+	if err := c.get(ctx, "/api/cas/tags", &r); err != nil {
+		return nil, err
+	}
+	return r.Tags, nil
+}
+
+// CASResolveTag resolves a tag to its content ref.
+func (c *Client) CASResolveTag(ctx context.Context, name, version string) (*CASTag, error) {
+	var r CASTag
+	if err := c.get(ctx, "/api/cas/tags/"+name+"/"+version, &r); err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
+// CASGetContent fetches raw content by ref.
+func (c *Client) CASGetContent(ctx context.Context, ref string) ([]byte, error) {
+	return c.getRaw(ctx, "/api/cas/content/"+ref)
+}
+
+// CASPutContent stores content and returns the ref hash.
+func (c *Client) CASPutContent(ctx context.Context, content []byte) (string, error) {
+	var r struct {
+		Ref string `json:"ref"`
+	}
+	if err := c.post(ctx, "/api/cas/content", json.RawMessage(content), &r); err != nil {
+		return "", err
+	}
+	return r.Ref, nil
+}
+
+// ─── Documents ──────────────────────────────────────────────────────────────
+
+// GetDocument fetches a document by ID.
+func (c *Client) GetDocument(ctx context.Context, id string) (map[string]any, error) {
+	var r map[string]any
+	if err := c.get(ctx, "/v1/gateway/documents/"+id, &r); err != nil {
 		return nil, err
 	}
 	return r, nil

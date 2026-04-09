@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/DojoGenesis/dojo-cli/internal/art"
 	"github.com/DojoGenesis/dojo-cli/internal/client"
 	"github.com/DojoGenesis/dojo-cli/internal/commands"
 	"github.com/DojoGenesis/dojo-cli/internal/config"
@@ -338,8 +339,25 @@ func newReadline(turns int) (*readline.Instance, error) {
 				readline.PcItem("deliberate"),
 			),
 			readline.PcItem("chat"),
+			readline.PcItem("info"),
+			readline.PcItem("channels"),
+			readline.PcItem("bind"),
+			readline.PcItem("unbind"),
 		),
-		readline.PcItem("/skill", readline.PcItem("ls")),
+		readline.PcItem("/apps",
+			readline.PcItem("launch"),
+			readline.PcItem("close"),
+			readline.PcItem("status"),
+			readline.PcItem("call"),
+		),
+		readline.PcItem("/workflow"),
+		readline.PcItem("/skill",
+			readline.PcItem("ls"),
+			readline.PcItem("get"),
+			readline.PcItem("inspect"),
+			readline.PcItem("tags"),
+		),
+		readline.PcItem("/doc"),
 		readline.PcItem("/session",
 			readline.PcItem("new"),
 		),
@@ -400,6 +418,9 @@ func historyPath() string {
 
 func printWelcome(cfg *config.Config, session string) {
 	fmt.Println()
+
+	// Bonsai sigil — zen visual anchor
+	fmt.Print(art.SmallBonsaiString())
 
 	// Sunset gradient wordmark
 	fmt.Println(sunsetWordmark("  Dojo CLI"))

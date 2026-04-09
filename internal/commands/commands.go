@@ -111,6 +111,9 @@ func (r *Registry) register() {
 	r.add(r.runCmd())
 	r.add(r.practiceCmd())
 	r.add(r.projectsCmd())
+	r.add(r.appsCmd())
+	r.add(r.workflowCmd())
+	r.add(r.docCmd())
 }
 
 // ─── /help ────────────────────────────────────────────────────────────────────
@@ -136,7 +139,21 @@ func (r *Registry) helpCmd() Command {
 				{"/agent ls", "list agents registered in the gateway"},
 				{"/agent dispatch <mode> <msg>", "create agent and stream response"},
 				{"/agent chat <id> <msg>", "chat with existing agent by ID"},
+				{"/agent info <id>", "show full agent detail (status, disposition, channels)"},
+				{"/agent channels <id>", "list channels bound to an agent"},
+				{"/agent bind <id> <channel>", "bind an agent to a channel"},
+				{"/agent unbind <id> <channel>", "unbind an agent from a channel"},
+				{"/apps", "list running MCP apps"},
+				{"/apps launch <name>", "launch an MCP app"},
+				{"/apps close <name>", "stop an MCP app"},
+				{"/apps status", "show MCP app connection status"},
+				{"/apps call <app> <tool> <json>", "invoke a tool on an MCP app"},
 				{"/skill ls [filter]", "list skills (optionally filter by name)"},
+				{"/skill get <name>", "fetch skill content from CAS (latest version)"},
+				{"/skill inspect <hash>", "fetch raw CAS content by ref/hash"},
+				{"/skill tags", "list all CAS skill tags (name, version, ref)"},
+				{"/workflow <name> [input-json]", "execute a workflow and stream progress"},
+				{"/doc <id>", "fetch and display a document by ID"},
 				{"/session", "show active session ID"},
 				{"/session new", "start a fresh session"},
 				{"/session <id>", "resume a prior session by ID"},
@@ -372,8 +389,8 @@ func (r *Registry) agentCmd() Command {
 	return Command{
 		Name:    "agent",
 		Aliases: []string{"agents"},
-		Usage:   "/agent [ls|dispatch <mode> <msg>|chat <id> <msg>]",
-		Short:   "List, create, or chat with agents",
+		Usage:   "/agent [ls|dispatch <mode> <msg>|chat <id> <msg>|info <id>|channels <id>|bind <id> <ch>|unbind <id> <ch>]",
+		Short:   "List, create, chat with, or manage agent channels",
 		Run: func(ctx context.Context, args []string) error {
 			sub := "ls"
 			if len(args) > 0 {
@@ -462,6 +479,99 @@ func (r *Registry) agentCmd() Command {
 				}
 
 				return chatErr
+
+			case "info":
+				// /agent info <id>
+				if len(args) < 2 {
+					return fmt.Errorf("usage: /agent info <agent-id>")
+				}
+				agentID := args[1]
+				detail, err := r.gw.GetAgent(ctx, agentID)
+				if err != nil {
+					return fmt.Errorf("could not fetch agent detail: %w", err)
+				}
+				fmt.Println()
+				color.New(color.Bold).Print(gcolor.HEX("#e8b04a").Sprintf("  Agent: %s\n\n", agentID))
+				printKV("agent_id", detail.AgentID)
+				printKV("status", colorStatus(detail.Status))
+				if detail.Disposition != nil {
+					d := detail.Disposition
+					printKV("disposition", fmt.Sprintf("tone=%s pacing=%s depth=%s", d.Tone, d.Pacing, d.Depth))
+				} else {
+					printKV("disposition", gcolor.HEX("#94a3b8").Sprint("(default)"))
+				}
+				printKV("created_at", detail.CreatedAt)
+				if len(detail.Channels) > 0 {
+					printKV("channels", strings.Join(detail.Channels, ", "))
+				} else {
+					printKV("channels", gcolor.HEX("#94a3b8").Sprint("(none)"))
+				}
+				if len(detail.Config) > 0 {
+					b, jsonErr := json.MarshalIndent(detail.Config, "    ", "  ")
+					if jsonErr == nil {
+						fmt.Printf("%s\n    %s\n",
+							gcolor.HEX("#94a3b8").Sprintf("  %-24s", "config"),
+							color.WhiteString(string(b)),
+						)
+					}
+				}
+				fmt.Println()
+				return nil
+
+			case "channels":
+				// /agent channels <id>
+				if len(args) < 2 {
+					return fmt.Errorf("usage: /agent channels <agent-id>")
+				}
+				agentID := args[1]
+				channels, err := r.gw.ListAgentChannels(ctx, agentID)
+				if err != nil {
+					return fmt.Errorf("could not list agent channels: %w", err)
+				}
+				fmt.Println()
+				color.New(color.Bold).Print(gcolor.HEX("#e8b04a").Sprintf("  Channels for %s (%d)\n\n", agentID, len(channels)))
+				if len(channels) == 0 {
+					fmt.Println(gcolor.HEX("#94a3b8").Sprint("  No channels bound."))
+				}
+				for _, ch := range channels {
+					fmt.Printf("  %s\n", gcolor.HEX("#f4a261").Sprint(ch))
+				}
+				fmt.Println()
+				return nil
+
+			case "bind":
+				// /agent bind <id> <channel>
+				if len(args) < 3 {
+					return fmt.Errorf("usage: /agent bind <agent-id> <channel>")
+				}
+				agentID := args[1]
+				channel := args[2]
+				if err := r.gw.BindAgentChannels(ctx, agentID, []string{channel}); err != nil {
+					return fmt.Errorf("could not bind channel: %w", err)
+				}
+				fmt.Println()
+				fmt.Println(gcolor.HEX("#7fb88c").Sprint("  Channel bound"))
+				printKV("agent", agentID)
+				printKV("channel", channel)
+				fmt.Println()
+				return nil
+
+			case "unbind":
+				// /agent unbind <id> <channel>
+				if len(args) < 3 {
+					return fmt.Errorf("usage: /agent unbind <agent-id> <channel>")
+				}
+				agentID := args[1]
+				channel := args[2]
+				if err := r.gw.UnbindAgentChannel(ctx, agentID, channel); err != nil {
+					return fmt.Errorf("could not unbind channel: %w", err)
+				}
+				fmt.Println()
+				fmt.Println(gcolor.HEX("#7fb88c").Sprint("  Channel unbound"))
+				printKV("agent", agentID)
+				printKV("channel", channel)
+				fmt.Println()
+				return nil
 
 			default: // ls
 				agents, err := r.gw.Agents(ctx)
@@ -563,80 +673,156 @@ func (r *Registry) skillCmd() Command {
 	return Command{
 		Name:    "skill",
 		Aliases: []string{"skills"},
-		Usage:   "/skill ls [filter]",
-		Short:   "List skills (optionally filter by name)",
+		Usage:   "/skill [ls [filter]|get <name>|inspect <hash>|tags]",
+		Short:   "List, fetch, or inspect skills from CAS",
 		Run: func(ctx context.Context, args []string) error {
-			// args[0] may be "ls" or a filter term
-			filter := ""
-			for _, a := range args {
-				if a != "ls" {
-					filter = strings.ToLower(a)
+			sub := "ls"
+			if len(args) > 0 {
+				sub = strings.ToLower(args[0])
+			}
+
+			switch sub {
+			case "get":
+				// /skill get <name>
+				if len(args) < 2 {
+					return fmt.Errorf("usage: /skill get <name>")
 				}
-			}
+				name := args[1]
+				tag, err := r.gw.CASResolveTag(ctx, name, "latest")
+				if err != nil {
+					return fmt.Errorf("could not resolve tag %q: %w", name, err)
+				}
+				content, err := r.gw.CASGetContent(ctx, tag.Ref)
+				if err != nil {
+					return fmt.Errorf("could not fetch content for ref %q: %w", tag.Ref, err)
+				}
+				fmt.Println()
+				color.New(color.Bold).Print(gcolor.HEX("#e8b04a").Sprintf("  Skill: %s @ %s\n\n", tag.Name, tag.Version))
+				printKV("ref", tag.Ref)
+				fmt.Println()
+				fmt.Println(color.WhiteString(string(content)))
+				fmt.Println()
+				return nil
 
-			skills, err := r.gw.Skills(ctx)
-			if err != nil {
-				return fmt.Errorf("could not fetch skills: %w", err)
-			}
+			case "inspect":
+				// /skill inspect <hash>
+				if len(args) < 2 {
+					return fmt.Errorf("usage: /skill inspect <hash>")
+				}
+				ref := args[1]
+				content, err := r.gw.CASGetContent(ctx, ref)
+				if err != nil {
+					return fmt.Errorf("could not fetch content for ref %q: %w", ref, err)
+				}
+				fmt.Println()
+				color.New(color.Bold).Print(gcolor.HEX("#e8b04a").Sprintf("  CAS ref: %s\n\n", ref))
+				fmt.Println(color.WhiteString(string(content)))
+				fmt.Println()
+				return nil
 
-			// Filter
-			if filter != "" {
-				var filtered []client.Skill
-				for _, s := range skills {
-					if strings.Contains(strings.ToLower(s.Name), filter) ||
-						strings.Contains(strings.ToLower(s.Plugin), filter) {
-						filtered = append(filtered, s)
+			case "tags":
+				// /skill tags
+				tags, err := r.gw.CASListTags(ctx)
+				if err != nil {
+					return fmt.Errorf("could not list CAS tags: %w", err)
+				}
+				fmt.Println()
+				color.New(color.Bold).Print(gcolor.HEX("#e8b04a").Sprintf("  CAS Tags (%d)\n\n", len(tags)))
+				if len(tags) == 0 {
+					fmt.Println(gcolor.HEX("#94a3b8").Sprint("  No tags found."))
+					fmt.Println()
+					return nil
+				}
+				// Table header
+				fmt.Printf("  %s  %s  %s\n",
+					gcolor.HEX("#94a3b8").Sprintf("%-32s", "Name"),
+					gcolor.HEX("#94a3b8").Sprintf("%-12s", "Version"),
+					gcolor.HEX("#94a3b8").Sprint("Ref"),
+				)
+				fmt.Printf("  %s\n", gcolor.HEX("#64748b").Sprint(strings.Repeat("─", 72)))
+				for _, t := range tags {
+					fmt.Printf("  %s  %s  %s\n",
+						gcolor.HEX("#f4a261").Sprintf("%-32s", truncate(t.Name, 32)),
+						color.WhiteString("%-12s", truncate(t.Version, 12)),
+						gcolor.HEX("#94a3b8").Sprint(truncate(t.Ref, 20)),
+					)
+				}
+				fmt.Println()
+				return nil
+
+			default: // ls (sub may be "ls" or a filter term)
+				// args[0] may be "ls" or a filter term
+				filter := ""
+				for _, a := range args {
+					if a != "ls" {
+						filter = strings.ToLower(a)
 					}
 				}
-				skills = filtered
-			}
 
-			fmt.Println()
-			if filter != "" {
-				color.New(color.Bold).Print(gcolor.HEX("#e8b04a").Sprintf("  Skills matching %q (%d)\n\n", filter, len(skills)))
-			} else {
-				color.New(color.Bold).Print(gcolor.HEX("#e8b04a").Sprintf("  Skills (%d)\n\n", len(skills)))
-			}
+				skills, err := r.gw.Skills(ctx)
+				if err != nil {
+					return fmt.Errorf("could not fetch skills: %w", err)
+				}
 
-			if len(skills) == 0 {
-				fmt.Println(gcolor.HEX("#94a3b8").Sprint("  No skills found."))
+				// Filter
+				if filter != "" {
+					var filtered []client.Skill
+					for _, s := range skills {
+						if strings.Contains(strings.ToLower(s.Name), filter) ||
+							strings.Contains(strings.ToLower(s.Plugin), filter) {
+							filtered = append(filtered, s)
+						}
+					}
+					skills = filtered
+				}
+
+				fmt.Println()
+				if filter != "" {
+					color.New(color.Bold).Print(gcolor.HEX("#e8b04a").Sprintf("  Skills matching %q (%d)\n\n", filter, len(skills)))
+				} else {
+					color.New(color.Bold).Print(gcolor.HEX("#e8b04a").Sprintf("  Skills (%d)\n\n", len(skills)))
+				}
+
+				if len(skills) == 0 {
+					fmt.Println(gcolor.HEX("#94a3b8").Sprint("  No skills found."))
+					fmt.Println()
+					return nil
+				}
+
+				// Group by category
+				cats := map[string][]client.Skill{}
+				order := []string{}
+				for _, s := range skills {
+					cat := s.Category
+					if cat == "" {
+						cat = "general"
+					}
+					if _, seen := cats[cat]; !seen {
+						order = append(order, cat)
+					}
+					cats[cat] = append(cats[cat], s)
+				}
+				for _, cat := range order {
+					// Glass-effect section divider
+					fmt.Printf("  %s %s %s\n",
+						gcolor.HEX("#64748b").Sprint("────"),
+						gcolor.HEX("#e8b04a").Sprint("["+cat+"]"),
+						gcolor.HEX("#64748b").Sprint("────"),
+					)
+					for _, s := range cats[cat] {
+						plugin := ""
+						if s.Plugin != "" {
+							plugin = gcolor.HEX("#94a3b8").Sprintf("(%s)", s.Plugin)
+						}
+						fmt.Printf("    %s %s\n",
+							gcolor.HEX("#f4a261").Sprintf("%-40s", s.Name),
+							plugin,
+						)
+					}
+				}
 				fmt.Println()
 				return nil
 			}
-
-			// Group by category
-			cats := map[string][]client.Skill{}
-			order := []string{}
-			for _, s := range skills {
-				cat := s.Category
-				if cat == "" {
-					cat = "general"
-				}
-				if _, seen := cats[cat]; !seen {
-					order = append(order, cat)
-				}
-				cats[cat] = append(cats[cat], s)
-			}
-			for _, cat := range order {
-				// Glass-effect section divider
-				fmt.Printf("  %s %s %s\n",
-					gcolor.HEX("#64748b").Sprint("────"),
-					gcolor.HEX("#e8b04a").Sprint("["+cat+"]"),
-					gcolor.HEX("#64748b").Sprint("────"),
-				)
-				for _, s := range cats[cat] {
-					plugin := ""
-					if s.Plugin != "" {
-						plugin = gcolor.HEX("#94a3b8").Sprintf("(%s)", s.Plugin)
-					}
-					fmt.Printf("    %s %s\n",
-						gcolor.HEX("#f4a261").Sprintf("%-40s", s.Name),
-						plugin,
-					)
-				}
-			}
-			fmt.Println()
-			return nil
 		},
 	}
 }
@@ -1373,6 +1559,226 @@ func (r *Registry) projectsCmd() Command {
 
 			printKV("plugins loaded", fmt.Sprintf("%d", len(r.plgs)))
 			printKV("session", *r.session)
+			fmt.Println()
+			return nil
+		},
+	}
+}
+
+// ─── /apps ───────────────────────────────────────────────────────────────────
+
+func (r *Registry) appsCmd() Command {
+	return Command{
+		Name:    "apps",
+		Aliases: []string{"app"},
+		Usage:   "/apps [launch <name>|close <name>|status|call <app> <tool> <json>]",
+		Short:   "List and manage running MCP apps",
+		Run: func(ctx context.Context, args []string) error {
+			sub := "ls"
+			if len(args) > 0 {
+				sub = strings.ToLower(args[0])
+			}
+
+			switch sub {
+			case "launch":
+				// /apps launch <name> [config-json]
+				if len(args) < 2 {
+					return fmt.Errorf("usage: /apps launch <name> [config-json]")
+				}
+				name := args[1]
+				var cfg map[string]any
+				if len(args) >= 3 {
+					if err := json.Unmarshal([]byte(args[2]), &cfg); err != nil {
+						return fmt.Errorf("invalid config JSON: %w", err)
+					}
+				}
+				if err := r.gw.LaunchApp(ctx, name, cfg); err != nil {
+					return fmt.Errorf("could not launch app %q: %w", name, err)
+				}
+				fmt.Println()
+				fmt.Println(gcolor.HEX("#7fb88c").Sprint("  App launched"))
+				printKV("name", name)
+				fmt.Println()
+				return nil
+
+			case "close":
+				// /apps close <name>
+				if len(args) < 2 {
+					return fmt.Errorf("usage: /apps close <name>")
+				}
+				name := args[1]
+				if err := r.gw.CloseApp(ctx, name); err != nil {
+					return fmt.Errorf("could not close app %q: %w", name, err)
+				}
+				fmt.Println()
+				fmt.Println(gcolor.HEX("#7fb88c").Sprint("  App closed"))
+				printKV("name", name)
+				fmt.Println()
+				return nil
+
+			case "status":
+				// /apps status
+				status, err := r.gw.AppStatus(ctx)
+				if err != nil {
+					return fmt.Errorf("could not fetch app status: %w", err)
+				}
+				fmt.Println()
+				color.New(color.Bold).Print(gcolor.HEX("#e8b04a").Sprint("  App Status\n\n"))
+				for k, v := range status {
+					printKV(k, fmt.Sprintf("%v", v))
+				}
+				fmt.Println()
+				return nil
+
+			case "call":
+				// /apps call <app> <tool> <json>
+				if len(args) < 4 {
+					return fmt.Errorf("usage: /apps call <app> <tool> <json-input>")
+				}
+				appName := args[1]
+				toolName := args[2]
+				inputJSON := strings.Join(args[3:], " ")
+				var input map[string]any
+				if err := json.Unmarshal([]byte(inputJSON), &input); err != nil {
+					return fmt.Errorf("invalid input JSON: %w", err)
+				}
+				result, err := r.gw.ProxyToolCall(ctx, appName, toolName, input)
+				if err != nil {
+					return fmt.Errorf("tool call failed: %w", err)
+				}
+				fmt.Println()
+				color.New(color.Bold).Print(gcolor.HEX("#e8b04a").Sprintf("  Result: %s/%s\n\n", appName, toolName))
+				b, jsonErr := json.MarshalIndent(result, "  ", "  ")
+				if jsonErr != nil {
+					return fmt.Errorf("could not marshal result: %w", jsonErr)
+				}
+				fmt.Println(color.WhiteString("  " + string(b)))
+				fmt.Println()
+				return nil
+
+			default: // ls
+				apps, err := r.gw.ListApps(ctx)
+				if err != nil {
+					return fmt.Errorf("could not list apps: %w", err)
+				}
+				fmt.Println()
+				color.New(color.Bold).Print(gcolor.HEX("#e8b04a").Sprintf("  MCP Apps (%d)\n\n", len(apps)))
+				if len(apps) == 0 {
+					fmt.Println(gcolor.HEX("#94a3b8").Sprint("  No apps running. Use /apps launch <name> to start one."))
+					fmt.Println()
+					return nil
+				}
+				for _, a := range apps {
+					toolCount := fmt.Sprintf("%d tools", a.Tools)
+					fmt.Printf("  %s  %s  %s\n",
+						gcolor.HEX("#f4a261").Sprintf("%-28s", a.Name),
+						colorStatus(a.Status),
+						gcolor.HEX("#94a3b8").Sprint(toolCount),
+					)
+				}
+				fmt.Println()
+				return nil
+			}
+		},
+	}
+}
+
+// ─── /workflow ────────────────────────────────────────────────────────────────
+
+func (r *Registry) workflowCmd() Command {
+	return Command{
+		Name:  "workflow",
+		Usage: "/workflow <name> [input-json]",
+		Short: "Execute a workflow and stream progress",
+		Run: func(ctx context.Context, args []string) error {
+			if len(args) == 0 {
+				return fmt.Errorf("usage: /workflow <name> [input-json]")
+			}
+			name := args[0]
+
+			// Parse optional JSON input
+			var input map[string]any
+			if len(args) >= 2 {
+				inputJSON := strings.Join(args[1:], " ")
+				if err := json.Unmarshal([]byte(inputJSON), &input); err != nil {
+					return fmt.Errorf("invalid input JSON: %w", err)
+				}
+			}
+			if input == nil {
+				input = map[string]any{}
+			}
+
+			fmt.Println()
+			fmt.Println(gcolor.HEX("#94a3b8").Sprintf("  Executing workflow: %s", name))
+
+			resp, err := r.gw.ExecuteWorkflow(ctx, name, input)
+			if err != nil {
+				return fmt.Errorf("could not execute workflow: %w", err)
+			}
+
+			printKV("run_id", resp.RunID)
+			printKV("status", colorStatus(resp.Status))
+			fmt.Println()
+
+			color.New(color.Bold).Print(gcolor.HEX("#e8b04a").Sprint("  dojo  "))
+
+			// Stream progress
+			err = r.gw.WorkflowExecutionStream(ctx, resp.RunID, func(chunk client.SSEChunk) {
+				switch chunk.Event {
+				case "thinking":
+					fmt.Print(gcolor.HEX("#94a3b8").Sprint("\n  [Thinking] " + truncate(chunk.Data, 80)))
+				case "tool_call":
+					fmt.Print(gcolor.HEX("#457b9d").Sprintf("\n  [Tool: %s]", truncate(chunk.Data, 60)))
+				case "tool_result":
+					// absorbed into the response
+				default:
+					if text := agentExtractText(chunk.Data); text != "" {
+						fmt.Print(text)
+					}
+				}
+			})
+
+			fmt.Println()
+			fmt.Println()
+			return err
+		},
+	}
+}
+
+// ─── /doc ─────────────────────────────────────────────────────────────────────
+
+func (r *Registry) docCmd() Command {
+	return Command{
+		Name:  "doc",
+		Usage: "/doc <id>",
+		Short: "Fetch and display a document by ID",
+		Run: func(ctx context.Context, args []string) error {
+			if len(args) == 0 {
+				return fmt.Errorf("usage: /doc <id>")
+			}
+			id := args[0]
+			doc, err := r.gw.GetDocument(ctx, id)
+			if err != nil {
+				return fmt.Errorf("could not fetch document: %w", err)
+			}
+			fmt.Println()
+			color.New(color.Bold).Print(gcolor.HEX("#e8b04a").Sprintf("  Document: %s\n\n", id))
+			for k, v := range doc {
+				switch val := v.(type) {
+				case map[string]any, []any:
+					b, jsonErr := json.MarshalIndent(val, "    ", "  ")
+					if jsonErr != nil {
+						printKV(k, fmt.Sprintf("%v", val))
+					} else {
+						fmt.Printf("%s\n    %s\n",
+							gcolor.HEX("#94a3b8").Sprintf("  %-24s", k),
+							color.WhiteString(string(b)),
+						)
+					}
+				default:
+					printKV(k, fmt.Sprintf("%v", val))
+				}
+			}
 			fmt.Println()
 			return nil
 		},
