@@ -298,6 +298,7 @@ func (c *Client) GardenStats(ctx context.Context) (map[string]any, error) {
 type ChatRequest struct {
 	Message   string `json:"message"`
 	Model     string `json:"model,omitempty"`
+	Provider  string `json:"provider,omitempty"`
 	Stream    bool   `json:"stream"`
 	SessionID string `json:"session_id"`
 	UserID    string `json:"user_id,omitempty"`
@@ -824,9 +825,10 @@ func (c *Client) GetTrace(ctx context.Context, traceID string) (map[string]any, 
 // ─── Provider Settings ──────────────────────────────────────────────────────
 
 // SetProviderKeyRequest is the body for POST /v1/settings/providers.
+// Note: the gateway handler uses field name "key", not "api_key".
 type SetProviderKeyRequest struct {
 	Provider string `json:"provider"`
-	APIKey   string `json:"api_key"`
+	APIKey   string `json:"key"`
 }
 
 // SetProviderKey sets an API key for a provider.

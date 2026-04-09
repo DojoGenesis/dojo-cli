@@ -2,8 +2,12 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 )
 
 // Config is the dojo CLI configuration, loaded from ~/.dojo/settings.json.
@@ -11,6 +15,11 @@ type Config struct {
 	Gateway  GatewayConfig  `json:"gateway"`
 	Plugins  PluginsConfig  `json:"plugins"`
 	Defaults DefaultsConfig `json:"defaults"`
+	Auth     AuthConfig     `json:"auth,omitempty"`
+}
+
+type AuthConfig struct {
+	UserID string `json:"user_id,omitempty"`
 }
 
 type GatewayConfig struct {
@@ -55,13 +64,109 @@ func Load() (*Config, error) {
 	if v := os.Getenv("DOJO_PROVIDER"); v != "" {
 		cfg.Defaults.Provider = v
 	}
+	if v := os.Getenv("DOJO_DISPOSITION"); v != "" {
+		cfg.Defaults.Disposition = v
+	}
+	if v := os.Getenv("DOJO_MODEL"); v != "" {
+		cfg.Defaults.Model = v
+	}
+	if v := os.Getenv("DOJO_USER_ID"); v != "" {
+		cfg.Auth.UserID = v
+	}
+
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
 
 	return cfg, nil
+}
+
+// validDispositions lists the allowed values for Defaults.Disposition.
+var validDispositions = map[string]bool{
+	"":            true,
+	"focused":     true,
+	"balanced":    true,
+	"exploratory": true,
+	"deliberate":  true,
+}
+
+// Validate checks that the config values are well-formed.
+// It returns a descriptive error for the first invalid field found.
+func (c *Config) Validate() error {
+	// Gateway URL must be parseable.
+	if c.Gateway.URL != "" {
+		if _, err := url.ParseRequestURI(c.Gateway.URL); err != nil {
+			return fmt.Errorf("invalid gateway.url %q: %w", c.Gateway.URL, err)
+		}
+	}
+
+	// Gateway timeout must be a valid Go duration.
+	if c.Gateway.Timeout != "" {
+		if _, err := time.ParseDuration(c.Gateway.Timeout); err != nil {
+			return fmt.Errorf("invalid gateway.timeout %q: %w", c.Gateway.Timeout, err)
+		}
+	}
+
+	// Disposition must be a known value (or empty).
+	if !validDispositions[c.Defaults.Disposition] {
+		return fmt.Errorf(
+			"invalid defaults.disposition %q: must be one of focused, balanced, exploratory, deliberate, or empty",
+			c.Defaults.Disposition,
+		)
+	}
+
+	return nil
+}
+
+// EffectiveString returns a human-readable dump of the active config
+// showing each setting as a key=value line.
+func (c *Config) EffectiveString() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "gateway.url = %s\n", c.Gateway.URL)
+	fmt.Fprintf(&b, "gateway.timeout = %s\n", c.Gateway.Timeout)
+	if c.Gateway.Token != "" {
+		fmt.Fprintf(&b, "gateway.token = %s\n", maskToken(c.Gateway.Token))
+	} else {
+		fmt.Fprintf(&b, "gateway.token = (not set)\n")
+	}
+	fmt.Fprintf(&b, "defaults.provider = %s\n", defaultIfEmpty(c.Defaults.Provider, "(not set)"))
+	fmt.Fprintf(&b, "defaults.model = %s\n", defaultIfEmpty(c.Defaults.Model, "(not set)"))
+	fmt.Fprintf(&b, "defaults.disposition = %s\n", defaultIfEmpty(c.Defaults.Disposition, "(not set)"))
+	fmt.Fprintf(&b, "plugins.path = %s\n", c.Plugins.Path)
+	fmt.Fprintf(&b, "auth.user_id = %s\n", defaultIfEmpty(c.Auth.UserID, "(not set)"))
+	return b.String()
+}
+
+func maskToken(t string) string {
+	if len(t) <= 8 {
+		return "****"
+	}
+	return t[:4] + "****" + t[len(t)-4:]
+}
+
+func defaultIfEmpty(s, fallback string) string {
+	if s == "" {
+		return fallback
+	}
+	return s
 }
 
 // SettingsPath returns the config file path (exported for /settings command).
 func SettingsPath() string {
 	return settingsPath()
+}
+
+// Save writes the current config to ~/.dojo/settings.json.
+func (c *Config) Save() error {
+	dir := DojoDir()
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(settingsPath(), data, 0600)
 }
 
 // DojoDir returns ~/.dojo

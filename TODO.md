@@ -1,262 +1,114 @@
-# Dojo CLI — Integration Todo
+# Dojo CLI -- Integration Todo
 
-## Status: Phase 1 complete, Phase 2 in progress (agents running)
-
----
-
-## CRITICAL BUG — Fix before next test
-
-### Session ID required by /v1/chat
-
-`POST /v1/chat` returns **400** when `session_id` is missing — it is not optional.
-
-**File:** `internal/repl/repl.go` → `chat()` function
-**File:** `internal/client/client.go` → `ChatRequest` struct
-
-**Fix:**
-1. Add `SessionID string` to `client.ChatRequest` (already field exists in server's `ChatRequest`)
-2. In `repl.New()`, generate a session ID once: `r.session = fmt.Sprintf("dojo-%d", time.Now().UnixNano())`
-3. Pass `SessionID: r.session` in every `client.ChatRequest` inside `repl.chat()`
-
-The session ID is what ties successive chat turns together in the gateway's memory system. Same session → accumulated context. New REPL invocation → new session (correct behavior).
+## Status: Phases 1-7 complete. Near-shippable.
 
 ---
 
-## Integration Spec 1 — Session Continuity
+## Resolved Items (verified against source)
 
-**Goal:** Make the REPL a stateful participant in the gateway's memory system, not a sequence of disconnected single-turn calls.
+The following items have been verified as implemented and working:
 
-### What the gateway provides
-
-- `POST /v1/chat` requires `session_id string` — the same value across turns gives the memory manager a single conversation to compress and recall
-- The gateway stores turn history in SQLite under that session ID
-- The session is never explicitly "closed" — it stays open until TTL or explicit deletion
-
-### What the REPL needs to do
-
-1. **Generate session ID at startup** in `repl.New()`:
-   ```go
-   r.session = fmt.Sprintf("dojo-cli-%s", time.Now().Format("20060102-150405"))
-   ```
-   Print it in the welcome banner so the user can reference it: `session: dojo-cli-20260409-142301`
-
-2. **Persist session across turns** — pass `session_id: r.session` in every `ChatStream` call. The gateway uses this to look up prior turns in memory.
-
-3. **Add `/session` command** to `commands.go`:
-   ```
-   /session           show current session ID
-   /session new       start a new session (generates a fresh ID, breaks continuity)
-   /session <id>      resume a named session (connects to prior gateway memory)
-   ```
-   Requires the registry to hold a reference to the REPL's session — pass a `*string` pointer or add a setter.
-
-4. **Add `UserID` support** — `POST /v1/chat` also accepts `user_id`. Read from `cfg.Auth.UserID` (add to config). Defaults to empty string (guest user, which gateway allows).
-
-### Files to change
-- `internal/repl/repl.go` — session field, new() init, chat() call, welcome banner
-- `internal/client/client.go` — `ChatRequest.SessionID string` field
-- `internal/commands/commands.go` — add `/session` command, pass session pointer to registry
-- `internal/config/config.go` — add `Auth.UserID` field
-
-### Acceptance criteria
-- `dojo chat` does not return a 400 error
-- Asking a follow-up question ("what did I just say?") returns a coherent response that references the prior turn
-- `/session new` resets continuity; gateway treats next turn as fresh context
-- Session ID printed at startup
+- **Session ID bug (was CRITICAL BUG)** -- RESOLVED. `ChatRequest.SessionID` field in `client.go` line 303, generated at startup in `repl.New()` (`dojo-cli-YYYYMMDD-HHMMSS` format), passed in every `ChatStream` call, printed in welcome banner, `/session` command with `new` and `<id>` subcommands.
+- **Integration Spec 1 (Session Continuity)** -- DONE. All acceptance criteria met.
+- **Integration Spec 2 (Agent Dispatch)** -- client layer AND command layer DONE. `/agent dispatch`, `/agent chat`, `/agent ls`, `/agent info`, `/agent channels`, `/agent bind`, `/agent unbind` all fully wired in `cmd_agent.go`. Tool call display (`[Tool: tool_name]`) implemented in `streamAgentChat()`.
+- **Integration Spec 3 (Orchestration)** -- client layer DONE, `/run` command DONE (MVP approach: routes through ChatStream, gateway handles orchestration internally).
+- **Phase 2 work** -- ALL items complete (plugins scanner, hooks runner, `/hooks`, `/garden`, `/trail`, `/pilot`, `/trace`, `/practice`).
+- **One-shot mode** -- `dojo --one-shot "task"` implemented in `cmd/dojo/main.go` lines 79-108.
+- **Shell completions** -- `dojo completion zsh|bash|fish` implemented in `cmd/dojo/main.go` lines 117-176.
+- **Version as `var`** -- `main.go` line 20.
+- **Agent persistence** -- `state.AddAgent()`, `state.TouchAgent()`, `state.RecentAgents()` all implemented in `internal/state/state.go` with tests. Agent IDs and modes are stored in `~/.dojo/state.json` across REPL sessions.
+- **Exit codes** -- Exit 0 (success), Exit 1 (gateway/config error) via `fatalf`. Correct and standard.
 
 ---
 
-## Integration Spec 2 — Agent Dispatch
+## Integration Spec 1 -- Session Continuity (DONE)
 
-**Goal:** Let the user dispatch a named agent from the REPL, pass it a task, and stream the response — going through the gateway's full ADA disposition + tool loop.
+All acceptance criteria met:
 
-### What the gateway provides
+- [x] Generate session ID at startup (`repl.go` line 56)
+- [x] Print session ID in welcome banner (`repl.go` lines 467-470)
+- [x] Persist session across turns -- `SessionID: r.session` in every `ChatStream` call
+- [x] `/session` command: show, `new`, and resume by ID
+- [x] `UserID` field on `ChatRequest` (line 304)
 
-**Create an agent:**
-```
-POST /v1/gateway/agents
-Body: { "workspace_root": "/path", "active_mode": "balanced" }
-Returns: { "agent_id": "uuid", "status": "created", "disposition": {...} }
-```
-The agent is initialized with the ADA disposition from the workspace root's `.ada/disposition.yaml` (or default if none). `active_mode` matches the disposition preset names: `"focused"`, `"balanced"`, `"exploratory"`, `"deliberate"`.
-
-**Chat with an agent:**
-```
-POST /v1/gateway/agents/:id/chat
-Body: { "message": "...", "stream": true, "user_id": "" }
-Returns: SSE stream — same event format as /v1/chat
-```
-The agent has tool access (full tool registry), DAG planning capability, and the disposition shaping its pacing/depth/tone.
-
-**List existing agents:**
-```
-GET /v1/gateway/agents
-Returns: { "agents": [{agent_id, status, disposition, channels}], "total": N }
-```
-Agents persist in-memory for the gateway's lifetime. They are re-used if their ID is known.
-
-### New client methods needed
-
-```go
-// CreateAgent creates a new agent and returns its ID.
-func (c *Client) CreateAgent(ctx context.Context, workspaceRoot, activeMode string) (string, error)
-
-// AgentChatStream streams a conversation with a specific agent.
-// Same SSEChunk callback as ChatStream.
-func (c *Client) AgentChatStream(ctx context.Context, agentID, message string, onChunk func(SSEChunk)) error
-```
-
-### New command: `/agent dispatch`
-
-Extend `agentCmd()` in `commands.go`:
-
-```
-/agent ls                     list agents (existing)
-/agent dispatch <mode> <msg>  create agent with mode, send message, stream response
-/agent chat <id> <msg>        chat with existing agent by ID
-```
-
-`mode` values: `focused`, `balanced`, `exploratory`, `deliberate` (maps to `active_mode`).
-
-Workspace root defaults to `os.Getwd()` — the agent initializes from whatever `.ada/disposition.yaml` is in scope.
-
-**UX flow:**
-```
-dojo › /agent dispatch exploratory what tensions exist in this codebase?
-
-  Creating agent (mode: exploratory)...
-  Agent: a3f9bc2e  disposition: pacing=deliberate depth=exhaustive
-
-  dojo  [Thinking... analyzing codebase structure]
-  [Tool: file_ops → listing root]
-  [Tool: web_search → recent Go patterns]
-
-  Here are three tensions I found...
-```
-
-Display thinking/tool events differently from text chunks (dim color, prefix with `[Tool: ...]`).
-
-### Files to change
-- `internal/client/client.go` — `CreateAgent()`, `AgentChatStream()`, `AgentChatRequest` type
-- `internal/commands/commands.go` — extend `agentCmd()` with `dispatch` and `chat` subcommands
-- `internal/repl/repl.go` — `extractText()` needs to handle agent SSE event format (thinking, tool_call, text_chunk events — different from plain chat delta)
-
-### Acceptance criteria
-- `/agent dispatch balanced hello` creates an agent and streams a response
-- Tool calls are visible in the stream as `[Tool: tool_name]` lines
-- `/agent ls` shows the newly created agent with its ID
-- `/agent chat <id> follow-up question` continues with the same agent
+**Still missing:** `Auth.UserID` in config -- currently UserID is always empty (guest). Low priority; gateway allows guest.
 
 ---
 
-## Integration Spec 3 — Orchestration Dispatch
+## Integration Spec 2 -- Agent Dispatch (DONE)
 
-**Goal:** Let the user submit a multi-step task as a DAG execution plan and watch it execute node by node.
+Client layer complete:
 
-### What the gateway provides
+- [x] `CreateAgent()` -- `client.go` line 466
+- [x] `AgentChatStream()` -- `client.go` line 490
+- [x] `CreateAgentRequest` / `CreateAgentResponse` / `AgentChatRequest` types
 
-**Submit a plan:**
-```
-POST /v1/gateway/orchestrate
-Body: {
-  "plan": {
-    "id": "uuid",
-    "name": "Research and summarize X",
-    "dag": [
-      { "id": "step1", "tool_name": "web_search", "input": {"query": "X"}, "depends_on": [] },
-      { "id": "step2", "tool_name": "summarize", "input": {"text": "{{step1.output}}"}, "depends_on": ["step1"] }
-    ]
-  },
-  "user_id": ""
-}
-Returns: { "execution_id": "uuid", "plan_id": "uuid", "status": "submitted" }
-```
-Execution is async — runs in a goroutine server-side.
+Command layer complete:
 
-**Poll DAG status:**
-```
-GET /v1/gateway/orchestrate/:id/dag
-Returns: { "execution_id": "...", "status": "running|completed|failed", "plan": {...}, "nodes": [...] }
-```
-
-### New command: `/run`
-
-```
-/run <natural language task>
-```
-
-Flow:
-1. The CLI sends the task description to `/v1/chat` with `session_id` and gets back a structured DAG plan (the gateway's intent classifier already routes complex multi-step tasks to its orchestration path)
-2. OR: the CLI constructs a simple DAG directly for common patterns (web_search + summarize is the MVP)
-3. Polls `/v1/gateway/orchestrate/:id/dag` every 1s and prints node status changes in real time
-
-**MVP approach** (avoid complexity of LLM-generated DAGs): just ask the gateway's chat endpoint to orchestrate and let it decide. The `/run` command is a wrapper around chat that sets the expectation for a multi-step result.
-
-**Full approach** (Phase 3): parse natural language into a DAG client-side using a simple template library, then submit via `/v1/gateway/orchestrate`.
-
-### New client methods needed
-
-```go
-type OrchestrateRequest struct {
-    Plan   ExecutionPlan `json:"plan"`
-    UserID string        `json:"user_id,omitempty"`
-}
-
-type ExecutionPlan struct {
-    ID   string            `json:"id"`
-    Name string            `json:"name"`
-    DAG  []ToolInvocation  `json:"dag"`
-}
-
-type ToolInvocation struct {
-    ID        string         `json:"id"`
-    ToolName  string         `json:"tool_name"`
-    Input     map[string]any `json:"input"`
-    DependsOn []string       `json:"depends_on,omitempty"`
-}
-
-type OrchestrationStatus struct {
-    ExecutionID string `json:"execution_id"`
-    Status      string `json:"status"` // submitted, running, completed, failed
-    PlanID      string `json:"plan_id"`
-}
-
-func (c *Client) Orchestrate(ctx context.Context, req OrchestrateRequest) (*OrchestrationStatus, error)
-func (c *Client) OrchestrationDAG(ctx context.Context, executionID string) (map[string]any, error)
-```
-
-### Files to change
-- `internal/client/client.go` — `Orchestrate()`, `OrchestrationDAG()`, plan types
-- `internal/commands/commands.go` — add `runCmd()`
-- `internal/repl/repl.go` — register `/run` in readline autocomplete
-
-### Acceptance criteria
-- `/run research the MCP protocol and summarize` submits a plan and prints live node status
-- Status updates print as nodes complete: `[step1 ✓] [step2 running...]`
-- Final output (if available in DAG response) is printed after completion
-- Error nodes show the error message
+- [x] `/agent ls` -- lists agents from gateway + recent local agents from state
+- [x] `/agent dispatch <mode> <msg>` -- creates agent, persists to state, streams response
+- [x] `/agent chat <id> <msg>` -- chats with existing agent, updates `last_used` in state
+- [x] `/agent info <id>` -- shows agent detail (disposition, channels, config)
+- [x] `/agent channels <id>` -- lists bound channels
+- [x] `/agent bind <id> <ch>` / `/agent unbind <id> <ch>` -- channel management
+- [x] Tool call display (`[Tool: tool_name]` + `[Thinking]` events) in `streamAgentChat()`
 
 ---
 
-## Remaining Phase 2 work (agents running)
+## Integration Spec 3 -- Orchestration Dispatch (DONE -- MVP)
 
-These are being built by background agents right now:
+Client layer complete:
 
-- `internal/plugins/scanner.go` — CoworkPlugins format scanner
-- `internal/hooks/runner.go` — PreCommand/PostCommand hook runner
-- `/hooks ls` command
-- `/garden plant <text>` (POST /v1/seeds)
-- `/trail` (GET /v1/memory timeline)
-- `/pilot` (GET /events live SSE tail)
-- `/trace` (trace guidance)
+- [x] `Orchestrate()` -- `client.go` line 554
+- [x] `OrchestrationDAG()` -- `client.go` line 573
+- [x] `OrchestrateRequest`, `ExecutionPlan`, `ToolInvocation`, `OrchestrationStatus`, `DAGStatus` types
+
+Command layer (MVP):
+
+- [x] `/run <task>` -- routes through ChatStream; gateway handles orchestration internally (`cmd_workflow.go` lines 85-127)
+- [ ] DAG status polling with live node display (not needed for MVP -- gateway handles internally)
 
 ---
 
-## Phase 3 (future)
+## Phase 2 work (DONE)
 
-- `/run` with full DAG construction from natural language
-- `dojo --one-shot "task"` flag for non-interactive use
-- Shell completions: `dojo completion zsh`
-- `~/.dojo/plugins/` auto-install from CoworkPlugins git URL
-- Agent persistence across REPL sessions (store agent ID in `~/.dojo/state.json`)
-- Disposition presets as named profiles in `settings.json`
+All items completed:
+
+- [x] `internal/plugins/scanner.go` -- CoworkPlugins format scanner
+- [x] `internal/hooks/runner.go` -- PreCommand/PostCommand hook runner
+- [x] `/hooks ls` and `/hooks fire` commands
+- [x] `/garden plant <text>` (POST /v1/seeds)
+- [x] `/trail` (GET /v1/memory timeline)
+- [x] `/pilot` (live SSE event dashboard -- plain text mode + Bubbletea TUI)
+- [x] `/trace` (trace inspection)
+- [x] `/practice` (daily reflections, rotates by day of week)
+- [x] `/workflow <name>` (workflow execution with SSE streaming)
+
+---
+
+## Phase 3 (remaining)
+
+- [ ] `~/.dojo/plugins/` auto-install from CoworkPlugins git URL
+- [ ] Disposition presets as named profiles in `settings.json`
+- [ ] `Auth.UserID` in config for non-guest identity
+- [ ] DAG construction from natural language (client-side plan building, vs current MVP of gateway-side routing)
+
+**Done (removed from Phase 3):**
+- `dojo --one-shot "task"` flag -- implemented in `cmd/dojo/main.go` lines 79-108
+- Shell completions (`dojo completion zsh|bash|fish`) -- implemented in `cmd/dojo/main.go` lines 117-176
+- Version as `var` not `const` -- `main.go` line 20
+- `/agent dispatch` and `/agent chat` subcommand wiring -- fully implemented in `cmd_agent.go`
+- `/run` command handler -- implemented as MVP in `cmd_workflow.go`
+- Agent persistence across REPL sessions -- `state.AddAgent()` / `state.TouchAgent()` / `state.RecentAgents()` in `internal/state/state.go`
+
+---
+
+## One-shot exit codes (VERIFIED CORRECT)
+
+The one-shot path in `cmd/dojo/main.go` already has correct exit code behavior:
+
+- **Exit 0:** success (line 107 -- normal `return`)
+- **Exit 1:** gateway/streaming error (line 105 -- `fatalf("one-shot error: %s", err)`)
+- **Exit 1:** config error (line 52 -- `fatalf("config error: %s", err)`)
+
+Config errors and gateway errors both exit 1 via `fatalf`. Differentiating exit 2 for config errors would require replacing the shared `fatalf` function with a code-aware variant. The current behavior is standard (all errors = exit 1) and correct for CLI tools. No code change needed.

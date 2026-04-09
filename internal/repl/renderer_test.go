@@ -1,0 +1,418 @@
+package repl
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/DojoGenesis/dojo-cli/internal/client"
+)
+
+// ─── ClassifyChunk ──────────────────────────────────────────────────────────
+
+func TestClassifyChunk_PlainText(t *testing.T) {
+	chunk := client.SSEChunk{Data: "hello world"}
+	ev := ClassifyChunk(chunk)
+	if ev.Type != EventText {
+		t.Errorf("plain text: got type %s, want text", ev.Type)
+	}
+	if ev.Content != "hello world" {
+		t.Errorf("plain text: got content %q, want %q", ev.Content, "hello world")
+	}
+}
+
+func TestClassifyChunk_OpenAIDeltaFormat(t *testing.T) {
+	data := `{"choices":[{"delta":{"content":"hello"}}]}`
+	chunk := client.SSEChunk{Data: data}
+	ev := ClassifyChunk(chunk)
+	if ev.Type != EventText {
+		t.Errorf("OpenAI delta: got type %s, want text", ev.Type)
+	}
+	if ev.Content != "hello" {
+		t.Errorf("OpenAI delta: got content %q, want %q", ev.Content, "hello")
+	}
+}
+
+func TestClassifyChunk_SimpleTextJSON(t *testing.T) {
+	data := `{"text":"hello"}`
+	chunk := client.SSEChunk{Data: data}
+	ev := ClassifyChunk(chunk)
+	if ev.Type != EventText {
+		t.Errorf("{text}: got type %s, want text", ev.Type)
+	}
+	if ev.Content != "hello" {
+		t.Errorf("{text}: got content %q, want %q", ev.Content, "hello")
+	}
+}
+
+func TestClassifyChunk_SimpleContentJSON(t *testing.T) {
+	data := `{"content":"world"}`
+	chunk := client.SSEChunk{Data: data}
+	ev := ClassifyChunk(chunk)
+	if ev.Type != EventText {
+		t.Errorf("{content}: got type %s, want text", ev.Type)
+	}
+	if ev.Content != "world" {
+		t.Errorf("{content}: got content %q, want %q", ev.Content, "world")
+	}
+}
+
+func TestClassifyChunk_MessageJSON(t *testing.T) {
+	data := `{"message":"msg value"}`
+	chunk := client.SSEChunk{Data: data}
+	ev := ClassifyChunk(chunk)
+	if ev.Type != EventText {
+		t.Errorf("{message}: got type %s, want text", ev.Type)
+	}
+	if ev.Content != "msg value" {
+		t.Errorf("{message}: got content %q, want %q", ev.Content, "msg value")
+	}
+}
+
+func TestClassifyChunk_ResponseJSON(t *testing.T) {
+	data := `{"response":"resp value"}`
+	chunk := client.SSEChunk{Data: data}
+	ev := ClassifyChunk(chunk)
+	if ev.Type != EventText {
+		t.Errorf("{response}: got type %s, want text", ev.Type)
+	}
+	if ev.Content != "resp value" {
+		t.Errorf("{response}: got content %q, want %q", ev.Content, "resp value")
+	}
+}
+
+func TestClassifyChunk_ChoiceTextFallback(t *testing.T) {
+	data := `{"choices":[{"text":"non-streaming text"}]}`
+	chunk := client.SSEChunk{Data: data}
+	ev := ClassifyChunk(chunk)
+	if ev.Type != EventText {
+		t.Errorf("choices[0].text: got type %s, want text", ev.Type)
+	}
+	if ev.Content != "non-streaming text" {
+		t.Errorf("choices[0].text: got content %q, want %q", ev.Content, "non-streaming text")
+	}
+}
+
+func TestClassifyChunk_DoneSentinel(t *testing.T) {
+	chunk := client.SSEChunk{Data: "[DONE]"}
+	ev := ClassifyChunk(chunk)
+	if ev.Type != EventDone {
+		t.Errorf("[DONE]: got type %s, want done", ev.Type)
+	}
+}
+
+func TestClassifyChunk_EmptyData(t *testing.T) {
+	chunk := client.SSEChunk{Data: ""}
+	ev := ClassifyChunk(chunk)
+	if ev.Type != EventEmpty {
+		t.Errorf("empty data: got type %s, want empty", ev.Type)
+	}
+}
+
+func TestClassifyChunk_WhitespaceOnly(t *testing.T) {
+	chunk := client.SSEChunk{Data: "   "}
+	ev := ClassifyChunk(chunk)
+	if ev.Type != EventEmpty {
+		t.Errorf("whitespace only: got type %s, want empty", ev.Type)
+	}
+}
+
+func TestClassifyChunk_UnknownJSONNoTextKeys(t *testing.T) {
+	data := `{"unknown_field":"value"}`
+	chunk := client.SSEChunk{Data: data}
+	ev := ClassifyChunk(chunk)
+	if ev.Type != EventEmpty {
+		t.Errorf("unknown JSON: got type %s, want empty", ev.Type)
+	}
+}
+
+func TestClassifyChunk_EventThinking_PlainText(t *testing.T) {
+	chunk := client.SSEChunk{Event: "thinking", Data: "let me consider..."}
+	ev := ClassifyChunk(chunk)
+	if ev.Type != EventThinking {
+		t.Errorf("thinking event: got type %s, want thinking", ev.Type)
+	}
+	if ev.Content != "let me consider..." {
+		t.Errorf("thinking event: got content %q, want %q", ev.Content, "let me consider...")
+	}
+}
+
+func TestClassifyChunk_EventThinking_JSON(t *testing.T) {
+	chunk := client.SSEChunk{Event: "thinking", Data: `{"content":"reasoning step"}`}
+	ev := ClassifyChunk(chunk)
+	if ev.Type != EventThinking {
+		t.Errorf("thinking JSON: got type %s, want thinking", ev.Type)
+	}
+	if ev.Content != "reasoning step" {
+		t.Errorf("thinking JSON: got content %q, want %q", ev.Content, "reasoning step")
+	}
+}
+
+func TestClassifyChunk_EventToolCall(t *testing.T) {
+	data := `{"name":"search","id":"tc_123"}`
+	chunk := client.SSEChunk{Event: "tool_call", Data: data}
+	ev := ClassifyChunk(chunk)
+	if ev.Type != EventToolCall {
+		t.Errorf("tool_call: got type %s, want tool_call", ev.Type)
+	}
+	if ev.Meta["tool"] != "search" {
+		t.Errorf("tool_call: got meta[tool] %q, want %q", ev.Meta["tool"], "search")
+	}
+	if ev.Meta["id"] != "tc_123" {
+		t.Errorf("tool_call: got meta[id] %q, want %q", ev.Meta["id"], "tc_123")
+	}
+}
+
+func TestClassifyChunk_EventToolCall_ToolKey(t *testing.T) {
+	data := `{"tool":"calculator"}`
+	chunk := client.SSEChunk{Event: "tool_call", Data: data}
+	ev := ClassifyChunk(chunk)
+	if ev.Type != EventToolCall {
+		t.Errorf("tool_call (tool key): got type %s, want tool_call", ev.Type)
+	}
+	if ev.Meta["tool"] != "calculator" {
+		t.Errorf("tool_call (tool key): got meta[tool] %q, want %q", ev.Meta["tool"], "calculator")
+	}
+}
+
+func TestClassifyChunk_EventToolResult(t *testing.T) {
+	chunk := client.SSEChunk{Event: "tool_result", Data: `{"content":"42"}`}
+	ev := ClassifyChunk(chunk)
+	if ev.Type != EventToolResult {
+		t.Errorf("tool_result: got type %s, want tool_result", ev.Type)
+	}
+	if ev.Content != "42" {
+		t.Errorf("tool_result: got content %q, want %q", ev.Content, "42")
+	}
+}
+
+func TestClassifyChunk_EventArtifact(t *testing.T) {
+	data := `{"id":"art_001","type":"code","content":"fmt.Println()"}`
+	chunk := client.SSEChunk{Event: "artifact", Data: data}
+	ev := ClassifyChunk(chunk)
+	if ev.Type != EventArtifact {
+		t.Errorf("artifact: got type %s, want artifact", ev.Type)
+	}
+	if ev.Meta["id"] != "art_001" {
+		t.Errorf("artifact: got meta[id] %q, want %q", ev.Meta["id"], "art_001")
+	}
+	if ev.Content != "fmt.Println()" {
+		t.Errorf("artifact: got content %q, want %q", ev.Content, "fmt.Println()")
+	}
+}
+
+func TestClassifyChunk_EventWarning(t *testing.T) {
+	chunk := client.SSEChunk{Event: "warning", Data: "rate limit approaching"}
+	ev := ClassifyChunk(chunk)
+	if ev.Type != EventWarning {
+		t.Errorf("warning: got type %s, want warning", ev.Type)
+	}
+	if ev.Content != "rate limit approaching" {
+		t.Errorf("warning: got content %q, want %q", ev.Content, "rate limit approaching")
+	}
+}
+
+func TestClassifyChunk_EventDone(t *testing.T) {
+	chunk := client.SSEChunk{Event: "done", Data: ""}
+	ev := ClassifyChunk(chunk)
+	if ev.Type != EventDone {
+		t.Errorf("done event: got type %s, want done", ev.Type)
+	}
+}
+
+func TestClassifyChunk_EventDoneWithData(t *testing.T) {
+	chunk := client.SSEChunk{Event: "done", Data: "stream finished"}
+	ev := ClassifyChunk(chunk)
+	if ev.Type != EventDone {
+		t.Errorf("done event with data: got type %s, want done", ev.Type)
+	}
+}
+
+// ─── Render ─────────────────────────────────────────────────────────────────
+
+func TestRender_Text_Plain(t *testing.T) {
+	ev := RenderEvent{Type: EventText, Content: "hello"}
+	got := ev.Render(true)
+	if got != "hello" {
+		t.Errorf("text plain: got %q, want %q", got, "hello")
+	}
+}
+
+func TestRender_Text_Styled(t *testing.T) {
+	ev := RenderEvent{Type: EventText, Content: "hello"}
+	got := ev.Render(false)
+	// Styled text output is content as-is (no wrapping)
+	if got != "hello" {
+		t.Errorf("text styled: got %q, want %q", got, "hello")
+	}
+}
+
+func TestRender_Thinking_Plain(t *testing.T) {
+	ev := RenderEvent{Type: EventThinking, Content: "hmm"}
+	got := ev.Render(true)
+	if got != "[thinking] hmm" {
+		t.Errorf("thinking plain: got %q, want %q", got, "[thinking] hmm")
+	}
+}
+
+func TestRender_Thinking_Styled(t *testing.T) {
+	ev := RenderEvent{Type: EventThinking, Content: "hmm"}
+	got := ev.Render(false)
+	// Styled output must contain the content (ANSI escapes may be absent in non-TTY)
+	if !strings.Contains(got, "hmm") {
+		t.Errorf("thinking styled: output %q does not contain 'hmm'", got)
+	}
+}
+
+func TestRender_ToolCall_Plain(t *testing.T) {
+	ev := RenderEvent{Type: EventToolCall, Content: "search", Meta: map[string]string{"tool": "search"}}
+	got := ev.Render(true)
+	if got != "[Tool: search]" {
+		t.Errorf("tool_call plain: got %q, want %q", got, "[Tool: search]")
+	}
+}
+
+func TestRender_ToolCall_Styled(t *testing.T) {
+	ev := RenderEvent{Type: EventToolCall, Content: "search", Meta: map[string]string{"tool": "search"}}
+	got := ev.Render(false)
+	if !strings.Contains(got, "[Tool: search]") {
+		t.Errorf("tool_call styled: output %q does not contain '[Tool: search]'", got)
+	}
+}
+
+func TestRender_ToolCall_MissingMeta(t *testing.T) {
+	ev := RenderEvent{Type: EventToolCall, Content: "data"}
+	got := ev.Render(true)
+	if got != "[Tool: unknown]" {
+		t.Errorf("tool_call no meta plain: got %q, want %q", got, "[Tool: unknown]")
+	}
+}
+
+func TestRender_ToolResult_Plain(t *testing.T) {
+	ev := RenderEvent{Type: EventToolResult, Content: "42"}
+	got := ev.Render(true)
+	if got != "42" {
+		t.Errorf("tool_result plain: got %q, want %q", got, "42")
+	}
+}
+
+func TestRender_ToolResult_Styled(t *testing.T) {
+	ev := RenderEvent{Type: EventToolResult, Content: "42"}
+	got := ev.Render(false)
+	// Styled output must contain the content (ANSI escapes may be absent in non-TTY)
+	if !strings.Contains(got, "42") {
+		t.Errorf("tool_result styled: output %q does not contain '42'", got)
+	}
+}
+
+func TestRender_Artifact_Plain(t *testing.T) {
+	ev := RenderEvent{Type: EventArtifact, Content: "code", Meta: map[string]string{"id": "art_1"}}
+	got := ev.Render(true)
+	if got != "[Artifact: art_1]" {
+		t.Errorf("artifact plain: got %q, want %q", got, "[Artifact: art_1]")
+	}
+}
+
+func TestRender_Artifact_MissingMeta(t *testing.T) {
+	ev := RenderEvent{Type: EventArtifact, Content: "data"}
+	got := ev.Render(true)
+	if got != "[Artifact: ?]" {
+		t.Errorf("artifact no meta plain: got %q, want %q", got, "[Artifact: ?]")
+	}
+}
+
+func TestRender_Artifact_Styled(t *testing.T) {
+	ev := RenderEvent{Type: EventArtifact, Content: "code", Meta: map[string]string{"id": "art_1"}}
+	got := ev.Render(false)
+	if !strings.Contains(got, "[Artifact: art_1]") {
+		t.Errorf("artifact styled: output %q does not contain '[Artifact: art_1]'", got)
+	}
+}
+
+func TestRender_Warning_Plain(t *testing.T) {
+	ev := RenderEvent{Type: EventWarning, Content: "slow"}
+	got := ev.Render(true)
+	if got != "[warning] slow" {
+		t.Errorf("warning plain: got %q, want %q", got, "[warning] slow")
+	}
+}
+
+func TestRender_Warning_Styled(t *testing.T) {
+	ev := RenderEvent{Type: EventWarning, Content: "slow"}
+	got := ev.Render(false)
+	if !strings.Contains(got, "[warning] slow") {
+		t.Errorf("warning styled: output %q does not contain '[warning] slow'", got)
+	}
+}
+
+func TestRender_Done_ReturnsEmpty(t *testing.T) {
+	ev := RenderEvent{Type: EventDone}
+	got := ev.Render(false)
+	if got != "" {
+		t.Errorf("done render: got %q, want empty", got)
+	}
+}
+
+func TestRender_Empty_ReturnsEmpty(t *testing.T) {
+	ev := RenderEvent{Type: EventEmpty}
+	got := ev.Render(true)
+	if got != "" {
+		t.Errorf("empty render: got %q, want empty", got)
+	}
+}
+
+// ─── EventType.String ───────────────────────────────────────────────────────
+
+func TestEventType_String(t *testing.T) {
+	tests := []struct {
+		et   EventType
+		want string
+	}{
+		{EventText, "text"},
+		{EventThinking, "thinking"},
+		{EventToolCall, "tool_call"},
+		{EventToolResult, "tool_result"},
+		{EventArtifact, "artifact"},
+		{EventWarning, "warning"},
+		{EventDone, "done"},
+		{EventEmpty, "empty"},
+		{EventType(99), "unknown"},
+	}
+	for _, tt := range tests {
+		if got := tt.et.String(); got != tt.want {
+			t.Errorf("EventType(%d).String() = %q, want %q", tt.et, got, tt.want)
+		}
+	}
+}
+
+// ─── Backward compatibility: ClassifyChunk produces same text as extractText ─
+
+func TestClassifyChunk_MatchesExtractText(t *testing.T) {
+	cases := []struct {
+		name string
+		data string
+		want string
+	}{
+		{"plain text", "hello world", "hello world"},
+		{"OpenAI delta", `{"choices":[{"delta":{"content":"hello"}}]}`, "hello"},
+		{"simple text", `{"text":"hello"}`, "hello"},
+		{"simple content", `{"content":"world"}`, "world"},
+		{"message field", `{"message":"msg value"}`, "msg value"},
+		{"response field", `{"response":"resp value"}`, "resp value"},
+		{"choices[0].text", `{"choices":[{"text":"non-streaming text"}]}`, "non-streaming text"},
+		{"[DONE]", "[DONE]", ""},
+		{"empty", "", ""},
+		{"whitespace", "   ", ""},
+		{"unknown JSON", `{"unknown_field":"value"}`, ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			chunk := client.SSEChunk{Data: tc.data}
+			ev := ClassifyChunk(chunk)
+			rendered := ev.Render(true) // plain mode = no ANSI, matches extractText output
+			if rendered != tc.want {
+				t.Errorf("ClassifyChunk+Render(true) for %q: got %q, want %q", tc.data, rendered, tc.want)
+			}
+		})
+	}
+}

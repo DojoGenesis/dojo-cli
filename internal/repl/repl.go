@@ -18,9 +18,9 @@ import (
 	"github.com/DojoGenesis/dojo-cli/internal/config"
 	"github.com/DojoGenesis/dojo-cli/internal/hooks"
 	"github.com/DojoGenesis/dojo-cli/internal/plugins"
+	"github.com/DojoGenesis/dojo-cli/internal/providers"
 	"github.com/DojoGenesis/dojo-cli/internal/state"
 	"github.com/chzyer/readline"
-	"github.com/fatih/color"
 	gcolor "github.com/gookit/color"
 )
 
@@ -32,12 +32,15 @@ type REPL struct {
 	runner   *hooks.Runner
 	session  string // active session ID
 	turns    int    // number of successful chat turns
+	resumed  bool   // true when session was restored via --resume or /session resume
 }
 
 // New creates a REPL bound to the given config and gateway client.
 // It scans cfg.Plugins.Path for CoworkPlugins-format directories on startup.
 // If scanning fails a warning is logged and the REPL continues with no hooks.
-func New(cfg *config.Config, gw *client.Client) *REPL {
+// When resume is true, the most recent session ID is restored from state
+// instead of generating a fresh one.
+func New(cfg *config.Config, gw *client.Client, resume bool) *REPL {
 	plgs, err := plugins.Scan(cfg.Plugins.Path)
 	if err != nil {
 		log.Printf("[repl] warning: plugin scan failed (%s): %v — continuing with no plugins", cfg.Plugins.Path, err)
@@ -48,17 +51,34 @@ func New(cfg *config.Config, gw *client.Client) *REPL {
 	}
 
 	r := &REPL{
-		cfg:   cfg,
-		gw:    gw,
-		turns: 0,
+		cfg:      cfg,
+		gw:       gw,
+		turns:    0,
+		resumed:  false,
 	}
-	r.session = fmt.Sprintf("dojo-cli-%s", time.Now().Format("20060102-150405"))
-	if st, err := state.Load(); err == nil && st.LastSessionID != "" {
-		fmt.Printf("\n  %s %s\n",
-			gcolor.HEX("#94a3b8").Sprint("Last session:"),
-			gcolor.HEX("#e8b04a").Sprint(st.LastSessionID),
-		)
+
+	if resume {
+		if st, loadErr := state.Load(); loadErr == nil && st.LastSessionID != "" {
+			r.session = st.LastSessionID
+			r.resumed = true
+		} else {
+			// --resume requested but no prior session exists; fall back to new
+			r.session = fmt.Sprintf("dojo-cli-%s", time.Now().Format("20060102-150405"))
+			fmt.Printf("\n  %s\n",
+				gcolor.HEX("#94a3b8").Sprint("No prior session found — starting fresh"),
+			)
+		}
+	} else {
+		r.session = fmt.Sprintf("dojo-cli-%s", time.Now().Format("20060102-150405"))
+		// Show last session hint (cosmetic only) when not resuming
+		if st, loadErr := state.Load(); loadErr == nil && st.LastSessionID != "" {
+			fmt.Printf("\n  %s %s\n",
+				gcolor.HEX("#94a3b8").Sprint("Last session:"),
+				gcolor.HEX("#e8b04a").Sprint(st.LastSessionID),
+			)
+		}
 	}
+
 	reg := commands.New(cfg, gw, plgs, &r.session)
 	r.registry = reg
 	r.runner = reg.Runner()
@@ -82,7 +102,7 @@ func vitalityPrompt(turns int) string {
 		return dot + " " + name + sep
 	default:
 		dot := gcolor.HEX("#f4a261").Sprint("●")
-		name := color.New(color.Bold).Sprint(gcolor.HEX("#f4a261").Sprint("dojo"))
+		name := gcolor.Bold.Sprint(gcolor.HEX("#f4a261").Sprint("dojo"))
 		return dot + " " + name + sep
 	}
 }
@@ -140,9 +160,34 @@ func sunsetWordmark(text string) string {
 	return out.String()
 }
 
+// syncProviderKeys pushes locally-available API keys to the gateway so it can
+// hot-register cloud providers. Errors are silently ignored — the gateway may
+// be offline or the endpoint may not be configured; direct-API mode still works.
+func (r *REPL) syncProviderKeys(ctx context.Context) {
+	keys := providers.LoadAPIKeys()
+	if keys.AnthropicKey != "" {
+		if err := r.gw.SetProviderKey(ctx, "anthropic", keys.AnthropicKey); err != nil {
+			log.Printf("[repl] syncProviderKeys: anthropic: %v", err)
+		}
+	}
+	if keys.OpenAIKey != "" {
+		if err := r.gw.SetProviderKey(ctx, "openai", keys.OpenAIKey); err != nil {
+			log.Printf("[repl] syncProviderKeys: openai: %v", err)
+		}
+	}
+	if keys.KimiKey != "" {
+		if err := r.gw.SetProviderKey(ctx, "kimi", keys.KimiKey); err != nil {
+			log.Printf("[repl] syncProviderKeys: kimi: %v", err)
+		}
+	}
+}
+
 // Run starts the interactive loop. Returns when the user exits.
 func (r *REPL) Run(ctx context.Context) error {
-	printWelcome(r.cfg, r.session)
+	printWelcome(r.cfg, r.session, r.resumed)
+
+	// Push local API keys to the gateway so cloud providers get registered.
+	r.syncProviderKeys(ctx)
 
 	if st, err := state.Load(); err == nil {
 		st.LastSessionID = r.session
@@ -189,7 +234,7 @@ func (r *REPL) Run(ctx context.Context) error {
 		}
 
 		if err := r.handle(ctx, line); err != nil {
-			color.Red("  error: %s\n", err)
+			gcolor.Red.Printf("  error: %s\n", err)
 		}
 	}
 }
@@ -222,20 +267,22 @@ func (r *REPL) chat(ctx context.Context, message string) error {
 	req := client.ChatRequest{
 		Message:   message,
 		Model:     r.cfg.Defaults.Model,
+		Provider:  r.cfg.Defaults.Provider,
 		SessionID: r.session,
+		UserID:    r.cfg.Auth.UserID,
 		Stream:    true,
 	}
 
 	fmt.Println()
-	prefix := color.New(color.Bold)
-	prefix.Print(gcolor.HEX("#e8b04a").Sprint("  dojo  "))
+	gcolor.Bold.Print(gcolor.HEX("#e8b04a").Sprint("  dojo  "))
 
 	var fullText strings.Builder
 	err := r.gw.ChatStream(ctx, req, func(chunk client.SSEChunk) {
-		text := extractText(chunk)
-		if text != "" {
-			fmt.Print(text)
-			fullText.WriteString(text)
+		ev := ClassifyChunk(chunk)
+		rendered := ev.Render(false)
+		if rendered != "" {
+			fmt.Print(rendered)
+			fullText.WriteString(ev.Content)
 		}
 	})
 
@@ -252,6 +299,10 @@ func (r *REPL) chat(ctx context.Context, message string) error {
 		fmt.Println(gcolor.HEX("#e8b04a").Sprint("  [stream interrupted — response may be incomplete]"))
 		r.turns++ // still count it — partial response was shown
 		return nil
+	}
+
+	if fullText.Len() == 0 {
+		fmt.Println(gcolor.HEX("#94a3b8").Sprint("  [no response — the gateway may have encountered an internal error]"))
 	}
 
 	r.turns++
@@ -313,7 +364,7 @@ func (r *REPL) runPlain(ctx context.Context) error {
 			return nil
 		}
 		if err := r.handle(ctx, line); err != nil {
-			color.Red("error: %s\n", err)
+			gcolor.Red.Printf("error: %s\n", err)
 		}
 	}
 }
@@ -360,6 +411,7 @@ func newReadline(turns int) (*readline.Instance, error) {
 		readline.PcItem("/doc"),
 		readline.PcItem("/session",
 			readline.PcItem("new"),
+			readline.PcItem("resume"),
 		),
 		readline.PcItem("/run"),
 		readline.PcItem("/garden",
@@ -403,6 +455,17 @@ func newReadline(turns int) (*readline.Instance, error) {
 		readline.PcItem("/projects",
 			readline.PcItem("ls"),
 		),
+		readline.PcItem("/plugin",
+			readline.PcItem("ls"),
+			readline.PcItem("install"),
+			readline.PcItem("rm"),
+		),
+		readline.PcItem("/disposition",
+			readline.PcItem("ls"),
+			readline.PcItem("set"),
+			readline.PcItem("show"),
+			readline.PcItem("create"),
+		),
 		readline.PcItem("exit"),
 	)
 
@@ -422,7 +485,7 @@ func historyPath() string {
 
 // ─── Welcome banner ──────────────────────────────────────────────────────────
 
-func printWelcome(cfg *config.Config, session string) {
+func printWelcome(cfg *config.Config, session string, resumed bool) {
 	fmt.Println()
 
 	// Bonsai sigil — zen visual anchor
@@ -431,11 +494,19 @@ func printWelcome(cfg *config.Config, session string) {
 	// Sunset gradient wordmark
 	fmt.Println(sunsetWordmark("  Dojo CLI"))
 
-	// Session line: label in cloud-gray, value in warm-amber
-	fmt.Printf("%s%s\n",
-		gcolor.HEX("#94a3b8").Sprint("  session: "),
-		gcolor.HEX("#e8b04a").Sprint(session),
-	)
+	// Session line: label in cloud-gray, value in warm-amber, "(resumed)" tag if applicable
+	if resumed {
+		fmt.Printf("%s%s %s\n",
+			gcolor.HEX("#94a3b8").Sprint("  session: "),
+			gcolor.HEX("#e8b04a").Sprint(session),
+			gcolor.HEX("#7fb88c").Sprint("(resumed)"),
+		)
+	} else {
+		fmt.Printf("%s%s\n",
+			gcolor.HEX("#94a3b8").Sprint("  session: "),
+			gcolor.HEX("#e8b04a").Sprint(session),
+		)
+	}
 
 	// Gateway line: label in cloud-gray, value in neutral-dark
 	fmt.Printf("%s%s\n",

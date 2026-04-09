@@ -22,6 +22,9 @@ func TestLoad_NoSettingsFile_ReturnsDefaults(t *testing.T) {
 	t.Setenv("DOJO_GATEWAY_TOKEN", "")
 	t.Setenv("DOJO_PLUGINS_PATH", "")
 	t.Setenv("DOJO_PROVIDER", "")
+	t.Setenv("DOJO_DISPOSITION", "")
+	t.Setenv("DOJO_MODEL", "")
+	t.Setenv("DOJO_USER_ID", "")
 
 	cfg, err := Load()
 	if err != nil {
@@ -54,6 +57,9 @@ func TestLoad_WithSettingsFile_AppliesOverrides(t *testing.T) {
 	t.Setenv("DOJO_GATEWAY_TOKEN", "")
 	t.Setenv("DOJO_PLUGINS_PATH", "")
 	t.Setenv("DOJO_PROVIDER", "")
+	t.Setenv("DOJO_DISPOSITION", "")
+	t.Setenv("DOJO_MODEL", "")
+	t.Setenv("DOJO_USER_ID", "")
 
 	// Create ~/.dojo/settings.json with custom values.
 	dojoDir := filepath.Join(tmp, ".dojo")
@@ -126,6 +132,9 @@ func TestLoad_EnvVar_GatewayURL(t *testing.T) {
 	t.Setenv("DOJO_GATEWAY_TOKEN", "")
 	t.Setenv("DOJO_PLUGINS_PATH", "")
 	t.Setenv("DOJO_PROVIDER", "")
+	t.Setenv("DOJO_DISPOSITION", "")
+	t.Setenv("DOJO_MODEL", "")
+	t.Setenv("DOJO_USER_ID", "")
 
 	cfg, err := Load()
 	if err != nil {
@@ -146,6 +155,9 @@ func TestLoad_EnvVar_Token(t *testing.T) {
 	t.Setenv("DOJO_GATEWAY_TOKEN", "env-token-xyz")
 	t.Setenv("DOJO_PLUGINS_PATH", "")
 	t.Setenv("DOJO_PROVIDER", "")
+	t.Setenv("DOJO_DISPOSITION", "")
+	t.Setenv("DOJO_MODEL", "")
+	t.Setenv("DOJO_USER_ID", "")
 
 	cfg, err := Load()
 	if err != nil {
@@ -166,6 +178,9 @@ func TestLoad_EnvVar_Provider(t *testing.T) {
 	t.Setenv("DOJO_GATEWAY_TOKEN", "")
 	t.Setenv("DOJO_PLUGINS_PATH", "")
 	t.Setenv("DOJO_PROVIDER", "anthropic")
+	t.Setenv("DOJO_DISPOSITION", "")
+	t.Setenv("DOJO_MODEL", "")
+	t.Setenv("DOJO_USER_ID", "")
 
 	cfg, err := Load()
 	if err != nil {
@@ -187,6 +202,9 @@ func TestLoad_EnvVar_PluginsPath(t *testing.T) {
 	t.Setenv("DOJO_GATEWAY_TOKEN", "")
 	t.Setenv("DOJO_PLUGINS_PATH", customPluginsPath)
 	t.Setenv("DOJO_PROVIDER", "")
+	t.Setenv("DOJO_DISPOSITION", "")
+	t.Setenv("DOJO_MODEL", "")
+	t.Setenv("DOJO_USER_ID", "")
 
 	cfg, err := Load()
 	if err != nil {
@@ -218,6 +236,9 @@ func TestLoad_InvalidJSON_ReturnsError(t *testing.T) {
 	t.Setenv("DOJO_GATEWAY_TOKEN", "")
 	t.Setenv("DOJO_PLUGINS_PATH", "")
 	t.Setenv("DOJO_PROVIDER", "")
+	t.Setenv("DOJO_DISPOSITION", "")
+	t.Setenv("DOJO_MODEL", "")
+	t.Setenv("DOJO_USER_ID", "")
 
 	dojoDir := filepath.Join(tmp, ".dojo")
 	os.MkdirAll(dojoDir, 0o755)
@@ -226,5 +247,241 @@ func TestLoad_InvalidJSON_ReturnsError(t *testing.T) {
 	_, err := Load()
 	if err == nil {
 		t.Fatal("expected error for invalid JSON settings file, got nil")
+	}
+}
+
+// ─── Validate ────────────────────────────────────────────────────────────────
+
+func TestValidate_ValidConfig(t *testing.T) {
+	cfg := &Config{
+		Gateway: GatewayConfig{
+			URL:     "http://localhost:7340",
+			Timeout: "60s",
+		},
+		Defaults: DefaultsConfig{
+			Disposition: "balanced",
+		},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() returned unexpected error: %v", err)
+	}
+}
+
+func TestValidate_BadURL(t *testing.T) {
+	cfg := &Config{
+		Gateway: GatewayConfig{
+			URL:     "not a url",
+			Timeout: "60s",
+		},
+		Defaults: DefaultsConfig{
+			Disposition: "balanced",
+		},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected Validate() to fail for bad URL, got nil")
+	}
+	if !strings.Contains(err.Error(), "gateway.url") {
+		t.Errorf("error should mention gateway.url, got: %v", err)
+	}
+}
+
+func TestValidate_BadTimeout(t *testing.T) {
+	cfg := &Config{
+		Gateway: GatewayConfig{
+			URL:     "http://localhost:7340",
+			Timeout: "xyz",
+		},
+		Defaults: DefaultsConfig{
+			Disposition: "balanced",
+		},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected Validate() to fail for bad timeout, got nil")
+	}
+	if !strings.Contains(err.Error(), "gateway.timeout") {
+		t.Errorf("error should mention gateway.timeout, got: %v", err)
+	}
+}
+
+func TestValidate_BadDisposition(t *testing.T) {
+	cfg := &Config{
+		Gateway: GatewayConfig{
+			URL:     "http://localhost:7340",
+			Timeout: "60s",
+		},
+		Defaults: DefaultsConfig{
+			Disposition: "chaotic",
+		},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected Validate() to fail for bad disposition, got nil")
+	}
+	if !strings.Contains(err.Error(), "defaults.disposition") {
+		t.Errorf("error should mention defaults.disposition, got: %v", err)
+	}
+}
+
+func TestValidate_EmptyDisposition(t *testing.T) {
+	cfg := &Config{
+		Gateway: GatewayConfig{
+			URL:     "http://localhost:7340",
+			Timeout: "60s",
+		},
+		Defaults: DefaultsConfig{
+			Disposition: "",
+		},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("empty disposition should be valid, got: %v", err)
+	}
+}
+
+// ─── Env var overrides: DOJO_DISPOSITION and DOJO_MODEL ─────────────────────
+
+func TestLoad_DispositionEnvOverride(t *testing.T) {
+	tmp := t.TempDir()
+	origHome := os.Getenv("HOME")
+	t.Setenv("HOME", tmp)
+	defer func() { os.Setenv("HOME", origHome) }()
+
+	t.Setenv("DOJO_GATEWAY_URL", "")
+	t.Setenv("DOJO_GATEWAY_TOKEN", "")
+	t.Setenv("DOJO_PLUGINS_PATH", "")
+	t.Setenv("DOJO_PROVIDER", "")
+	t.Setenv("DOJO_MODEL", "")
+	t.Setenv("DOJO_USER_ID", "")
+	t.Setenv("DOJO_DISPOSITION", "focused")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned error: %v", err)
+	}
+	if cfg.Defaults.Disposition != "focused" {
+		t.Errorf("Defaults.Disposition: got %q, want %q", cfg.Defaults.Disposition, "focused")
+	}
+}
+
+func TestLoad_ModelEnvOverride(t *testing.T) {
+	tmp := t.TempDir()
+	origHome := os.Getenv("HOME")
+	t.Setenv("HOME", tmp)
+	defer func() { os.Setenv("HOME", origHome) }()
+
+	t.Setenv("DOJO_GATEWAY_URL", "")
+	t.Setenv("DOJO_GATEWAY_TOKEN", "")
+	t.Setenv("DOJO_PLUGINS_PATH", "")
+	t.Setenv("DOJO_PROVIDER", "")
+	t.Setenv("DOJO_DISPOSITION", "")
+	t.Setenv("DOJO_USER_ID", "")
+	t.Setenv("DOJO_MODEL", "claude-sonnet-4-6")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned error: %v", err)
+	}
+	if cfg.Defaults.Model != "claude-sonnet-4-6" {
+		t.Errorf("Defaults.Model: got %q, want %q", cfg.Defaults.Model, "claude-sonnet-4-6")
+	}
+}
+
+// ─── EffectiveString ─────────────────────────────────────────────────────────
+
+func TestEffectiveString_ContainsAllFields(t *testing.T) {
+	cfg := &Config{
+		Gateway: GatewayConfig{
+			URL:     "http://localhost:7340",
+			Timeout: "60s",
+			Token:   "tok_abcdefgh1234",
+		},
+		Plugins: PluginsConfig{
+			Path: "/home/user/.dojo/plugins",
+		},
+		Defaults: DefaultsConfig{
+			Provider:    "anthropic",
+			Model:       "claude-sonnet-4-6",
+			Disposition: "balanced",
+		},
+	}
+	out := cfg.EffectiveString()
+
+	for _, want := range []string{
+		"gateway.url = http://localhost:7340",
+		"gateway.timeout = 60s",
+		"gateway.token = tok_****1234",
+		"defaults.provider = anthropic",
+		"defaults.model = claude-sonnet-4-6",
+		"defaults.disposition = balanced",
+		"plugins.path = /home/user/.dojo/plugins",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("EffectiveString() missing %q\ngot:\n%s", want, out)
+		}
+	}
+}
+
+// ─── Auth.UserID env override ───────────────────────────────────────────────
+
+func TestLoad_UserIDEnvOverride(t *testing.T) {
+	tmp := t.TempDir()
+	origHome := os.Getenv("HOME")
+	t.Setenv("HOME", tmp)
+	defer func() { os.Setenv("HOME", origHome) }()
+
+	t.Setenv("DOJO_GATEWAY_URL", "")
+	t.Setenv("DOJO_GATEWAY_TOKEN", "")
+	t.Setenv("DOJO_PLUGINS_PATH", "")
+	t.Setenv("DOJO_PROVIDER", "")
+	t.Setenv("DOJO_DISPOSITION", "")
+	t.Setenv("DOJO_MODEL", "")
+	t.Setenv("DOJO_USER_ID", "user-abc-123")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned error: %v", err)
+	}
+	if cfg.Auth.UserID != "user-abc-123" {
+		t.Errorf("Auth.UserID: got %q, want %q", cfg.Auth.UserID, "user-abc-123")
+	}
+}
+
+// ─── EffectiveString includes auth ──────────────────────────────────────────
+
+func TestEffectiveString_IncludesAuth(t *testing.T) {
+	cfg := &Config{
+		Gateway: GatewayConfig{
+			URL:     "http://localhost:7340",
+			Timeout: "60s",
+		},
+		Defaults: DefaultsConfig{
+			Disposition: "balanced",
+		},
+		Auth: AuthConfig{
+			UserID: "user-xyz-789",
+		},
+	}
+	out := cfg.EffectiveString()
+	want := "auth.user_id = user-xyz-789"
+	if !strings.Contains(out, want) {
+		t.Errorf("EffectiveString() missing %q\ngot:\n%s", want, out)
+	}
+}
+
+func TestEffectiveString_AuthNotSet(t *testing.T) {
+	cfg := &Config{
+		Gateway: GatewayConfig{
+			URL:     "http://localhost:7340",
+			Timeout: "60s",
+		},
+		Defaults: DefaultsConfig{
+			Disposition: "balanced",
+		},
+	}
+	out := cfg.EffectiveString()
+	want := "auth.user_id = (not set)"
+	if !strings.Contains(out, want) {
+		t.Errorf("EffectiveString() missing %q\ngot:\n%s", want, out)
 	}
 }

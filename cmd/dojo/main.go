@@ -14,7 +14,7 @@ import (
 	"github.com/DojoGenesis/dojo-cli/internal/client"
 	"github.com/DojoGenesis/dojo-cli/internal/config"
 	"github.com/DojoGenesis/dojo-cli/internal/repl"
-	"github.com/fatih/color"
+	gcolor "github.com/gookit/color"
 )
 
 var version = "0.1.0"
@@ -28,11 +28,12 @@ func main() {
 		flagDisposition = flag.String("disposition", "", "ADA disposition preset (focused|balanced|exploratory|deliberate)")
 		flagOneShot     = flag.String("one-shot", "", "Execute a single message and exit (non-interactive)")
 		flagCompletion  = flag.String("completion", "", "Generate shell completions (bash|zsh|fish)")
+		flagResume      = flag.Bool("resume", false, "Resume the most recent session instead of starting fresh")
 	)
 	flag.Parse()
 
 	if *flagNoColor {
-		color.NoColor = true
+		gcolor.Enable = false
 	}
 
 	if *flagVersion {
@@ -108,7 +109,7 @@ func main() {
 	}
 
 	// Run REPL (plugin scan happens inside repl.New)
-	r := repl.New(cfg, gw)
+	r := repl.New(cfg, gw, *flagResume)
 	if err := r.Run(ctx); err != nil {
 		fatalf("repl error: %s", err)
 	}
