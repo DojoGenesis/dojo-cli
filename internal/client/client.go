@@ -625,3 +625,215 @@ func (c *Client) post(ctx context.Context, path string, body any, out any) error
 
 	return json.NewDecoder(resp.Body).Decode(out)
 }
+
+func (c *Client) put(ctx context.Context, path string, body any) error {
+	b, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.base+path, bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		rb, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("gateway %s returned %d: %s", path, resp.StatusCode, strings.TrimSpace(string(rb)))
+	}
+	return nil
+}
+
+func (c *Client) delete(ctx context.Context, path string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.base+path, nil)
+	if err != nil {
+		return err
+	}
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		rb, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("gateway %s returned %d: %s", path, resp.StatusCode, strings.TrimSpace(string(rb)))
+	}
+	return nil
+}
+
+func (c *Client) getRaw(ctx context.Context, path string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		rb, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("gateway %s returned %d: %s", path, resp.StatusCode, strings.TrimSpace(string(rb)))
+	}
+	return io.ReadAll(resp.Body)
+}
+
+// ─── Memory — CRUD ──────────────────────────────────────────────────────────
+
+// StoreMemoryRequest is the body for POST /v1/memory.
+type StoreMemoryRequest struct {
+	Content string `json:"content"`
+	Type    string `json:"type,omitempty"` // e.g. "observation", "fact"
+}
+
+// StoreMemory creates a new memory entry.
+func (c *Client) StoreMemory(ctx context.Context, req StoreMemoryRequest) (*Memory, error) {
+	var wrapper struct {
+		Memory Memory `json:"memory"`
+	}
+	if err := c.post(ctx, "/v1/memory", req, &wrapper); err != nil {
+		return nil, err
+	}
+	return &wrapper.Memory, nil
+}
+
+// UpdateMemoryRequest is the body for PUT /v1/memory/:id.
+type UpdateMemoryRequest struct {
+	Content string `json:"content"`
+}
+
+// UpdateMemory updates an existing memory entry.
+func (c *Client) UpdateMemory(ctx context.Context, id string, req UpdateMemoryRequest) error {
+	return c.put(ctx, "/v1/memory/"+id, req)
+}
+
+// DeleteMemory deletes a memory entry.
+func (c *Client) DeleteMemory(ctx context.Context, id string) error {
+	return c.delete(ctx, "/v1/memory/"+id)
+}
+
+// SearchMemoriesRequest is the body for POST /v1/memory/search.
+type SearchMemoriesRequest struct {
+	Query string `json:"query"`
+	Limit int    `json:"limit,omitempty"`
+}
+
+// SearchMemories performs a semantic search across memories.
+func (c *Client) SearchMemories(ctx context.Context, query string) ([]Memory, error) {
+	req := SearchMemoriesRequest{Query: query, Limit: 20}
+	var r memoriesResponse
+	if err := c.post(ctx, "/v1/memory/search", req, &r); err != nil {
+		return nil, err
+	}
+	return r.Memories, nil
+}
+
+// DeleteSeed deletes a seed by ID.
+func (c *Client) DeleteSeed(ctx context.Context, id string) error {
+	return c.delete(ctx, "/v1/seeds/"+id)
+}
+
+// ─── Snapshots ──────────────────────────────────────────────────────────────
+
+// Snapshot represents a memory snapshot.
+type Snapshot struct {
+	ID        string `json:"id"`
+	SessionID string `json:"session_id"`
+	CreatedAt string `json:"created_at"`
+	Size      int    `json:"size,omitempty"`
+}
+
+type snapshotsEnvelope struct {
+	Snapshots []Snapshot `json:"snapshots"`
+	Total     int        `json:"total"`
+}
+
+// ListSnapshots fetches snapshots for a session.
+func (c *Client) ListSnapshots(ctx context.Context, session string) ([]Snapshot, error) {
+	var r snapshotsEnvelope
+	if err := c.get(ctx, "/v1/snapshots/"+session, &r); err != nil {
+		return nil, err
+	}
+	return r.Snapshots, nil
+}
+
+// CreateSnapshotRequest is the body for POST /v1/snapshots.
+type CreateSnapshotRequest struct {
+	SessionID string `json:"session_id"`
+}
+
+// CreateSnapshot creates a new memory snapshot.
+func (c *Client) CreateSnapshot(ctx context.Context, session string) (*Snapshot, error) {
+	req := CreateSnapshotRequest{SessionID: session}
+	var wrapper struct {
+		Snapshot Snapshot `json:"snapshot"`
+	}
+	if err := c.post(ctx, "/v1/snapshots", req, &wrapper); err != nil {
+		return nil, err
+	}
+	return &wrapper.Snapshot, nil
+}
+
+// RestoreSnapshot restores a prior snapshot.
+func (c *Client) RestoreSnapshot(ctx context.Context, snapshotID string) error {
+	var r map[string]any
+	return c.get(ctx, "/v1/snapshots/restore/"+snapshotID, &r)
+}
+
+// DeleteSnapshot deletes a snapshot.
+func (c *Client) DeleteSnapshot(ctx context.Context, id string) error {
+	return c.delete(ctx, "/v1/snapshots/"+id)
+}
+
+// ExportSnapshot exports a snapshot as raw bytes.
+func (c *Client) ExportSnapshot(ctx context.Context, id string) ([]byte, error) {
+	return c.getRaw(ctx, "/v1/snapshots/export/"+id)
+}
+
+// ─── Traces ─────────────────────────────────────────────────────────────────
+
+// GetTrace fetches trace data for an execution.
+func (c *Client) GetTrace(ctx context.Context, traceID string) (map[string]any, error) {
+	var r map[string]any
+	if err := c.get(ctx, "/v1/gateway/traces/"+traceID, &r); err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+// ─── Provider Settings ──────────────────────────────────────────────────────
+
+// SetProviderKeyRequest is the body for POST /v1/settings/providers.
+type SetProviderKeyRequest struct {
+	Provider string `json:"provider"`
+	APIKey   string `json:"api_key"`
+}
+
+// SetProviderKey sets an API key for a provider.
+func (c *Client) SetProviderKey(ctx context.Context, provider, apiKey string) error {
+	req := SetProviderKeyRequest{Provider: provider, APIKey: apiKey}
+	var r map[string]any
+	return c.post(ctx, "/v1/settings/providers", req, &r)
+}
+
+// GetProviderSettings fetches provider settings.
+func (c *Client) GetProviderSettings(ctx context.Context) (map[string]any, error) {
+	var r map[string]any
+	if err := c.get(ctx, "/v1/settings/providers", &r); err != nil {
+		return nil, err
+	}
+	return r, nil
+}

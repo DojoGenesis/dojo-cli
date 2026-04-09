@@ -83,6 +83,16 @@ func (s *State) TouchAgent(agentID string) {
 	}
 }
 
+// SaveSession updates the last session ID and saves state.
+func SaveSession(sessionID string) {
+	st, err := Load()
+	if err != nil {
+		st = &State{}
+	}
+	st.LastSessionID = sessionID
+	_ = st.Save()
+}
+
 // RecentAgents returns agents sorted by last_used (newest first), max n.
 func (s *State) RecentAgents(n int) []Agent {
 	agents := make([]Agent, 0, len(s.Agents))

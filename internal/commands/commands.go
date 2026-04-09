@@ -102,6 +102,7 @@ func (r *Registry) register() {
 	r.add(r.skillCmd())
 	r.add(r.gardenCmd())
 	r.add(r.trailCmd())
+	r.add(r.snapshotCmd())
 	r.add(r.traceCmd())
 	r.add(r.pilotCmd())
 	r.add(r.hooksCmd())
@@ -143,12 +144,18 @@ func (r *Registry) helpCmd() Command {
 				{"/garden ls", "list memory seeds"},
 				{"/garden stats", "memory garden statistics"},
 				{"/garden plant <text>", "plant a new seed into the garden"},
+				{"/garden search <query>", "search memory seeds"},
+				{"/garden rm <id>", "delete a seed"},
 				{"/trail", "show memory timeline"},
-				{"/trace", "show trace info and guidance"},
+				{"/trail add <text>", "store a memory entry"},
+				{"/trail search <query>", "search memories"},
+				{"/snapshot", "list/save/restore/export memory snapshots"},
+				{"/trace <id>", "inspect execution trace"},
 				{"/pilot", "live SSE event stream (Ctrl+C to stop)"},
 				{"/hooks ls", "list loaded hook rules from plugins"},
 				{"/hooks fire <event>", "manually fire a hook event (for testing)"},
 				{"/settings", "show config file path and active settings"},
+				{"/settings providers", "show provider configuration"},
 				{"/practice", "daily reflection prompts (rotates by day of week)"},
 				{"/projects ls", "local workspace view — cwd, plugins, session"},
 			}
@@ -687,6 +694,44 @@ func (r *Registry) gardenCmd() Command {
 				}
 				fmt.Println()
 
+			case "search":
+				// /garden search <query...>
+				if len(args) < 2 {
+					return fmt.Errorf("usage: /garden search <query>")
+				}
+				query := strings.Join(args[1:], " ")
+				results, err := r.gw.SearchMemories(ctx, query)
+				if err != nil {
+					return fmt.Errorf("could not search memories: %w", err)
+				}
+				fmt.Println()
+				color.New(color.Bold).Print(gcolor.HEX("#e8b04a").Sprintf("  Search results (%d)\n\n", len(results)))
+				if len(results) == 0 {
+					fmt.Println(gcolor.HEX("#94a3b8").Sprint("  No results found."))
+					fmt.Println()
+					return nil
+				}
+				for _, m := range results {
+					fmt.Printf("  %s  %s\n",
+						gcolor.HEX("#94a3b8").Sprintf("%-24s", m.ID),
+						color.WhiteString(truncate(m.Content, 80)),
+					)
+				}
+				fmt.Println()
+
+			case "rm":
+				// /garden rm <id>
+				if len(args) < 2 {
+					return fmt.Errorf("usage: /garden rm <id>")
+				}
+				id := args[1]
+				if err := r.gw.DeleteSeed(ctx, id); err != nil {
+					return fmt.Errorf("could not delete seed: %w", err)
+				}
+				fmt.Println()
+				fmt.Println(gcolor.HEX("#7fb88c").Sprint("  Seed deleted"))
+				fmt.Println()
+
 			case "harvest": // alias for ls
 				fallthrough
 			default: // ls
@@ -719,27 +764,181 @@ func (r *Registry) gardenCmd() Command {
 func (r *Registry) trailCmd() Command {
 	return Command{
 		Name:  "trail",
-		Usage: "/trail",
-		Short: "Show memory timeline",
+		Usage: "/trail [add <text>|rm <id>|search <query>]",
+		Short: "Show memory timeline or add/remove/search memories",
 		Run: func(ctx context.Context, args []string) error {
-			memories, err := r.gw.Memories(ctx)
-			if err != nil {
-				return fmt.Errorf("could not fetch memory trail: %w", err)
-			}
-			fmt.Println()
-			color.New(color.Bold).Print(gcolor.HEX("#e8b04a").Sprintf("  Memory Trail (%d)\n\n", len(memories)))
-			if len(memories) == 0 {
-				fmt.Println(gcolor.HEX("#94a3b8").Sprint("  No memory entries yet."))
+			if len(args) == 0 {
+				// default: list
+				memories, err := r.gw.Memories(ctx)
+				if err != nil {
+					return fmt.Errorf("could not fetch memory trail: %w", err)
+				}
+				fmt.Println()
+				color.New(color.Bold).Print(gcolor.HEX("#e8b04a").Sprintf("  Memory Trail (%d)\n\n", len(memories)))
+				if len(memories) == 0 {
+					fmt.Println(gcolor.HEX("#94a3b8").Sprint("  No memory entries yet."))
+					fmt.Println()
+					return nil
+				}
+				for _, m := range memories {
+					fmt.Printf("  %s  %s\n",
+						gcolor.HEX("#94a3b8").Sprintf("%-20s", m.CreatedAt),
+						color.WhiteString(truncate(m.Content, 80)),
+					)
+				}
 				fmt.Println()
 				return nil
 			}
-			for _, m := range memories {
-				fmt.Printf("  %s  %s\n",
-					gcolor.HEX("#94a3b8").Sprintf("%-20s", m.CreatedAt),
-					color.WhiteString(truncate(m.Content, 80)),
-				)
+
+			sub := strings.ToLower(args[0])
+			switch sub {
+			case "add":
+				// /trail add <text...>
+				if len(args) < 2 {
+					return fmt.Errorf("usage: /trail add <text>")
+				}
+				text := strings.Join(args[1:], " ")
+				mem, err := r.gw.StoreMemory(ctx, client.StoreMemoryRequest{Content: text})
+				if err != nil {
+					return fmt.Errorf("could not store memory: %w", err)
+				}
+				fmt.Println()
+				fmt.Println(gcolor.HEX("#7fb88c").Sprint("  Memory stored"))
+				if mem != nil {
+					printKV("id", mem.ID)
+				}
+				fmt.Println()
+
+			case "rm":
+				// /trail rm <id>
+				if len(args) < 2 {
+					return fmt.Errorf("usage: /trail rm <id>")
+				}
+				id := args[1]
+				if err := r.gw.DeleteMemory(ctx, id); err != nil {
+					return fmt.Errorf("could not delete memory: %w", err)
+				}
+				fmt.Println()
+				fmt.Println(gcolor.HEX("#7fb88c").Sprint("  Memory deleted"))
+				fmt.Println()
+
+			case "search":
+				// /trail search <query...>
+				if len(args) < 2 {
+					return fmt.Errorf("usage: /trail search <query>")
+				}
+				query := strings.Join(args[1:], " ")
+				results, err := r.gw.SearchMemories(ctx, query)
+				if err != nil {
+					return fmt.Errorf("could not search memories: %w", err)
+				}
+				fmt.Println()
+				color.New(color.Bold).Print(gcolor.HEX("#e8b04a").Sprintf("  Search results (%d)\n\n", len(results)))
+				if len(results) == 0 {
+					fmt.Println(gcolor.HEX("#94a3b8").Sprint("  No results found."))
+					fmt.Println()
+					return nil
+				}
+				for _, m := range results {
+					fmt.Printf("  %s  %s\n",
+						gcolor.HEX("#94a3b8").Sprintf("%-24s", m.ID),
+						color.WhiteString(truncate(m.Content, 80)),
+					)
+				}
+				fmt.Println()
+
+			default:
+				return fmt.Errorf("unknown trail subcommand %q — use: add, rm, search", sub)
 			}
-			fmt.Println()
+			return nil
+		},
+	}
+}
+
+// ─── /snapshot ───────────────────────────────────────────────────────────────
+
+func (r *Registry) snapshotCmd() Command {
+	return Command{
+		Name:  "snapshot",
+		Usage: "/snapshot [save|restore <id>|export <id>|rm <id>]",
+		Short: "List, save, restore, export, or delete memory snapshots",
+		Run: func(ctx context.Context, args []string) error {
+			sub := "ls"
+			if len(args) > 0 {
+				sub = strings.ToLower(args[0])
+			}
+
+			switch sub {
+			case "save":
+				snap, err := r.gw.CreateSnapshot(ctx, *r.session)
+				if err != nil {
+					return fmt.Errorf("could not create snapshot: %w", err)
+				}
+				fmt.Println()
+				fmt.Println(gcolor.HEX("#7fb88c").Sprint("  Snapshot saved"))
+				if snap != nil {
+					printKV("id", snap.ID)
+					printKV("session", snap.SessionID)
+					printKV("created", snap.CreatedAt)
+				}
+				fmt.Println()
+
+			case "restore":
+				if len(args) < 2 {
+					return fmt.Errorf("usage: /snapshot restore <id>")
+				}
+				id := args[1]
+				if err := r.gw.RestoreSnapshot(ctx, id); err != nil {
+					return fmt.Errorf("could not restore snapshot: %w", err)
+				}
+				fmt.Println()
+				fmt.Println(gcolor.HEX("#7fb88c").Sprint("  Snapshot restored"))
+				printKV("id", id)
+				fmt.Println()
+
+			case "export":
+				if len(args) < 2 {
+					return fmt.Errorf("usage: /snapshot export <id>")
+				}
+				id := args[1]
+				data, err := r.gw.ExportSnapshot(ctx, id)
+				if err != nil {
+					return fmt.Errorf("could not export snapshot: %w", err)
+				}
+				fmt.Println(string(data))
+
+			case "rm":
+				if len(args) < 2 {
+					return fmt.Errorf("usage: /snapshot rm <id>")
+				}
+				id := args[1]
+				if err := r.gw.DeleteSnapshot(ctx, id); err != nil {
+					return fmt.Errorf("could not delete snapshot: %w", err)
+				}
+				fmt.Println()
+				fmt.Println(gcolor.HEX("#7fb88c").Sprint("  Snapshot deleted"))
+				fmt.Println()
+
+			default: // ls
+				snaps, err := r.gw.ListSnapshots(ctx, *r.session)
+				if err != nil {
+					return fmt.Errorf("could not fetch snapshots: %w", err)
+				}
+				fmt.Println()
+				color.New(color.Bold).Print(gcolor.HEX("#e8b04a").Sprintf("  Snapshots (%d)\n\n", len(snaps)))
+				if len(snaps) == 0 {
+					fmt.Println(gcolor.HEX("#94a3b8").Sprint("  No snapshots found. Use /snapshot save to create one."))
+					fmt.Println()
+					return nil
+				}
+				for _, s := range snaps {
+					fmt.Printf("  %s  %s\n",
+						gcolor.HEX("#f4a261").Sprintf("%-36s", s.ID),
+						gcolor.HEX("#94a3b8").Sprint(s.CreatedAt),
+					)
+				}
+				fmt.Println()
+			}
 			return nil
 		},
 	}
@@ -750,18 +949,48 @@ func (r *Registry) trailCmd() Command {
 func (r *Registry) traceCmd() Command {
 	return Command{
 		Name:  "trace",
-		Usage: "/trace",
-		Short: "Show trace info and guidance",
+		Usage: "/trace [<id>]",
+		Short: "Inspect an execution trace by ID, or show guidance",
 		Run: func(ctx context.Context, args []string) error {
+			if len(args) == 0 {
+				// Guidance mode
+				fmt.Println()
+				color.New(color.Bold).Print(gcolor.HEX("#e8b04a").Sprint("  Dojo Trace"))
+				fmt.Println()
+				fmt.Println()
+				fmt.Println(gcolor.HEX("#457b9d").Sprint("  Trace follows the active session's decision and tool-use history."))
+				fmt.Println(gcolor.HEX("#457b9d").Sprint("  Connect the gateway with --trace to enable full trace output."))
+				fmt.Println()
+				printKV("gateway", r.cfg.Gateway.URL)
+				fmt.Println(gcolor.HEX("#94a3b8").Sprint("  hint: /trace <id>  — provide a trace ID to inspect"))
+				fmt.Println()
+				return nil
+			}
+
+			traceID := args[0]
+			data, err := r.gw.GetTrace(ctx, traceID)
+			if err != nil {
+				return fmt.Errorf("could not fetch trace: %w", err)
+			}
 			fmt.Println()
-			color.New(color.Bold).Print(gcolor.HEX("#e8b04a").Sprint("  Dojo Trace"))
-			fmt.Println()
-			fmt.Println()
-			// Trace context in info-steel
-			fmt.Println(gcolor.HEX("#457b9d").Sprint("  Trace follows the active session's decision and tool-use history."))
-			fmt.Println(gcolor.HEX("#457b9d").Sprint("  Connect the gateway with --trace to enable full trace output."))
-			fmt.Println()
-			printKV("gateway", r.cfg.Gateway.URL)
+			color.New(color.Bold).Print(gcolor.HEX("#e8b04a").Sprintf("  Trace: %s\n\n", traceID))
+			for k, v := range data {
+				switch val := v.(type) {
+				case map[string]any, []any:
+					// Format nested structures as indented JSON
+					b, jsonErr := json.MarshalIndent(val, "    ", "  ")
+					if jsonErr != nil {
+						printKV(k, fmt.Sprintf("%v", val))
+					} else {
+						fmt.Printf("%s\n    %s\n",
+							gcolor.HEX("#94a3b8").Sprintf("  %-24s", k),
+							color.WhiteString(string(b)),
+						)
+					}
+				default:
+					printKV(k, fmt.Sprintf("%v", val))
+				}
+			}
 			fmt.Println()
 			return nil
 		},
@@ -895,22 +1124,61 @@ func (r *Registry) settingsCmd() Command {
 	return Command{
 		Name:    "settings",
 		Aliases: []string{"config", "cfg"},
-		Usage:   "/settings",
-		Short:   "Show active config and settings file path",
+		Usage:   "/settings [providers|set <provider> <key>]",
+		Short:   "Show active config and settings, or manage provider keys",
 		Run: func(ctx context.Context, args []string) error {
-			fmt.Println()
-			color.New(color.Bold).Print(gcolor.HEX("#e8b04a").Sprint("  Active Settings"))
-			fmt.Println()
-			fmt.Println()
-			printKV("config file", config.SettingsPath())
-			printKV("gateway.url", r.cfg.Gateway.URL)
-			printKV("gateway.timeout", r.cfg.Gateway.Timeout)
-			printKV("plugins.path", r.cfg.Plugins.Path)
-			printKV("plugins loaded", fmt.Sprintf("%d", len(r.plgs)))
-			printKV("defaults.provider", orDefault(r.cfg.Defaults.Provider, "(auto)"))
-			printKV("defaults.disposition", r.cfg.Defaults.Disposition)
-			printKV("defaults.model", orDefault(r.cfg.Defaults.Model, "(auto)"))
-			fmt.Println()
+			if len(args) == 0 {
+				// Default: show config summary
+				fmt.Println()
+				color.New(color.Bold).Print(gcolor.HEX("#e8b04a").Sprint("  Active Settings"))
+				fmt.Println()
+				fmt.Println()
+				printKV("config file", config.SettingsPath())
+				printKV("gateway.url", r.cfg.Gateway.URL)
+				printKV("gateway.timeout", r.cfg.Gateway.Timeout)
+				printKV("plugins.path", r.cfg.Plugins.Path)
+				printKV("plugins loaded", fmt.Sprintf("%d", len(r.plgs)))
+				printKV("defaults.provider", orDefault(r.cfg.Defaults.Provider, "(auto)"))
+				printKV("defaults.disposition", r.cfg.Defaults.Disposition)
+				printKV("defaults.model", orDefault(r.cfg.Defaults.Model, "(auto)"))
+				fmt.Println()
+				return nil
+			}
+
+			sub := strings.ToLower(args[0])
+			switch sub {
+			case "providers":
+				providerSettings, err := r.gw.GetProviderSettings(ctx)
+				if err != nil {
+					return fmt.Errorf("could not fetch provider settings: %w", err)
+				}
+				fmt.Println()
+				color.New(color.Bold).Print(gcolor.HEX("#e8b04a").Sprint("  Provider Configuration"))
+				fmt.Println()
+				fmt.Println()
+				for k, v := range providerSettings {
+					printKV(k, colorStatus(fmt.Sprintf("%v", v)))
+				}
+				fmt.Println()
+
+			case "set":
+				// /settings set <provider> <key>
+				if len(args) < 3 {
+					return fmt.Errorf("usage: /settings set <provider> <api-key>")
+				}
+				provider := args[1]
+				apiKey := args[2]
+				if err := r.gw.SetProviderKey(ctx, provider, apiKey); err != nil {
+					return fmt.Errorf("could not set provider key: %w", err)
+				}
+				fmt.Println()
+				fmt.Println(gcolor.HEX("#7fb88c").Sprint("  Provider key updated"))
+				printKV("provider", provider)
+				fmt.Println()
+
+			default:
+				return fmt.Errorf("unknown settings subcommand %q — use: providers, set", sub)
+			}
 			return nil
 		},
 	}

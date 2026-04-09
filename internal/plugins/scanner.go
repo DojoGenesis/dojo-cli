@@ -3,6 +3,7 @@ package plugins
 
 import (
 	"encoding/json"
+	"log"
 	"os"
 	"path/filepath"
 )
@@ -120,9 +121,11 @@ func loadPluginMeta(dir string) (pluginMeta, bool) {
 			continue
 		}
 		var m pluginMeta
-		if err := json.Unmarshal(data, &m); err == nil {
-			return m, true
+		if err := json.Unmarshal(data, &m); err != nil {
+			log.Printf("[plugins] warning: skipping %s — failed to parse plugin.json: %v", path, err)
+			continue
 		}
+		return m, true
 	}
 	return pluginMeta{}, false
 }
@@ -139,6 +142,7 @@ func loadHooks(pluginDir, pluginName string) []HookRule {
 	// hooks.json is an object keyed by event name.
 	var raw map[string][]hookEntry
 	if err := json.Unmarshal(data, &raw); err != nil {
+		log.Printf("[plugins] warning: skipping hooks for plugin at %s — failed to parse hooks.json: %v", pluginDir, err)
 		return nil
 	}
 

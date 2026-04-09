@@ -2,11 +2,17 @@
 package hooks
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
+	"os"
 	"os/exec"
+	"path"
 	"strings"
+	"time"
 
 	"github.com/DojoGenesis/dojo-cli/internal/plugins"
 )
@@ -31,8 +37,7 @@ func New(ps []plugins.Plugin) *Runner {
 }
 
 // Fire runs all hook rules matching the given event name across all plugins.
-// Only "command" type hooks are executed in Phase 1; prompt/agent/http hooks
-// are recognised but skipped.
+// Supported hook types: command, prompt, agent, http.
 // Async hooks are run in a goroutine. Sync hooks block until completion.
 // ctx cancellation prevents new async hooks from starting and kills
 // already-running processes (exec.CommandContext sends SIGKILL).
@@ -42,35 +47,135 @@ func (r *Runner) Fire(ctx context.Context, event string, payload map[string]any)
 			if !strings.EqualFold(rule.Event, event) {
 				continue
 			}
+
+			// Evaluate matcher: glob against the command name in the payload.
+			if !matcherMatches(rule.Matcher, payload) {
+				continue
+			}
+
+			// Evaluate "if" condition.
+			if !conditionTrue(rule.If) {
+				continue
+			}
+
 			for _, h := range rule.Hooks {
-				if h.Type != "command" {
-					// Phase 1: skip prompt / agent / http hooks.
-					continue
-				}
-				cmd := h.Command
 				pluginName := p.Name
 				pluginPath := p.Path
 				isAsync := h.Async
 
 				if isAsync {
+					hCopy := h
 					go func() {
 						select {
 						case <-ctx.Done():
 							return
 						default:
 						}
-						if err := runCommand(ctx, cmd, pluginPath); err != nil {
+						if err := runHook(ctx, hCopy, pluginPath, payload); err != nil {
 							log.Printf("[hooks] async hook error (%s/%s): %v", pluginName, event, err)
 						}
 					}()
 				} else {
-					if err := runCommand(ctx, cmd, pluginPath); err != nil {
+					if err := runHook(ctx, h, pluginPath, payload); err != nil {
 						return fmt.Errorf("hook error (%s/%s): %w", pluginName, event, err)
 					}
 				}
 			}
 		}
 	}
+	return nil
+}
+
+// matcherMatches returns true if the matcher glob matches the command in the payload,
+// or if the matcher is empty / "*" (match everything).
+// The leading "/" is stripped from the command before matching, so that a matcher
+// like "garden*" matches both "/garden ls" and "garden ls".
+func matcherMatches(matcher string, payload map[string]any) bool {
+	if matcher == "" || matcher == "*" {
+		return true
+	}
+	if payload == nil {
+		return false
+	}
+	cmd, _ := payload["command"].(string)
+	if cmd == "" {
+		return false
+	}
+	// Strip leading slash so matchers like "garden*" work against "/garden ls".
+	cmd = strings.TrimPrefix(cmd, "/")
+	// path.Match operates on the full string; split on space to get just the name.
+	if idx := strings.IndexByte(cmd, ' '); idx >= 0 {
+		cmd = cmd[:idx]
+	}
+	matched, _ := path.Match(matcher, cmd)
+	return matched
+}
+
+// conditionTrue evaluates the "if" field.
+// "" or "true" → always true
+// "false" → always false
+// anything else → treat as env var name; true if set and non-empty.
+func conditionTrue(cond string) bool {
+	switch cond {
+	case "", "true":
+		return true
+	case "false":
+		return false
+	default:
+		return os.Getenv(cond) != ""
+	}
+}
+
+// runHook dispatches to the appropriate executor based on hook type.
+func runHook(ctx context.Context, h plugins.HookDef, pluginRoot string, payload map[string]any) error {
+	switch h.Type {
+	case "command":
+		return runCommand(ctx, h.Command, pluginRoot)
+	case "prompt":
+		fmt.Printf("[hook:prompt] %s\n", h.Prompt)
+		return nil
+	case "agent":
+		// Use Command as agent ID/description if Prompt is empty (fallback).
+		desc := h.Prompt
+		if desc == "" {
+			desc = h.Command
+		}
+		fmt.Printf("[hook:agent] %s\n", desc)
+		return nil
+	case "http":
+		return runHTTPHook(ctx, h.URL, payload)
+	default:
+		log.Printf("[hooks] unknown hook type %q — skipping", h.Type)
+		return nil
+	}
+}
+
+// runHTTPHook POSTs the payload as JSON to the given URL.
+// HTTP errors are logged but do not fail the command.
+func runHTTPHook(ctx context.Context, url string, payload map[string]any) error {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("[hooks] http hook: failed to marshal payload: %v", err)
+		return nil
+	}
+
+	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		log.Printf("[hooks] http hook: failed to build request: %v", err)
+		return nil
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Printf("[hooks] http hook: request error: %v", err)
+		return nil
+	}
+	defer resp.Body.Close()
+	log.Printf("[hooks] http hook: response status %s", resp.Status)
 	return nil
 }
 

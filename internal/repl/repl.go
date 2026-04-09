@@ -17,6 +17,7 @@ import (
 	"github.com/DojoGenesis/dojo-cli/internal/config"
 	"github.com/DojoGenesis/dojo-cli/internal/hooks"
 	"github.com/DojoGenesis/dojo-cli/internal/plugins"
+	"github.com/DojoGenesis/dojo-cli/internal/state"
 	"github.com/chzyer/readline"
 	"github.com/fatih/color"
 	gcolor "github.com/gookit/color"
@@ -51,6 +52,12 @@ func New(cfg *config.Config, gw *client.Client) *REPL {
 		turns: 0,
 	}
 	r.session = fmt.Sprintf("dojo-cli-%s", time.Now().Format("20060102-150405"))
+	if st, err := state.Load(); err == nil && st.LastSessionID != "" {
+		fmt.Printf("\n  %s %s\n",
+			gcolor.HEX("#94a3b8").Sprint("Last session:"),
+			gcolor.HEX("#e8b04a").Sprint(st.LastSessionID),
+		)
+	}
 	reg := commands.New(cfg, gw, plgs, &r.session)
 	r.registry = reg
 	r.runner = reg.Runner()
@@ -135,6 +142,11 @@ func sunsetWordmark(text string) string {
 // Run starts the interactive loop. Returns when the user exits.
 func (r *REPL) Run(ctx context.Context) error {
 	printWelcome(r.cfg, r.session)
+
+	if st, err := state.Load(); err == nil {
+		st.LastSessionID = r.session
+		_ = st.Save()
+	}
 
 	rl, err := newReadline(r.turns)
 	if err != nil {
@@ -229,11 +241,20 @@ func (r *REPL) chat(ctx context.Context, message string) error {
 	fmt.Println()
 	fmt.Println()
 
-	if err == nil {
-		r.turns++
+	if err != nil {
+		if ctx.Err() != nil {
+			// User interrupted with Ctrl+C during streaming — not an error
+			fmt.Println(gcolor.HEX("#94a3b8").Sprint("  [interrupted]"))
+			return nil
+		}
+		// Stream dropped unexpectedly
+		fmt.Println(gcolor.HEX("#e8b04a").Sprint("  [stream interrupted — response may be incomplete]"))
+		r.turns++ // still count it — partial response was shown
+		return nil
 	}
 
-	return err
+	r.turns++
+	return nil
 }
 
 // extractText pulls the readable text from an SSE chunk.
@@ -328,8 +349,20 @@ func newReadline(turns int) (*readline.Instance, error) {
 			readline.PcItem("stats"),
 			readline.PcItem("plant"),
 			readline.PcItem("harvest"),
+			readline.PcItem("search"),
+			readline.PcItem("rm"),
 		),
-		readline.PcItem("/trail"),
+		readline.PcItem("/trail",
+			readline.PcItem("add"),
+			readline.PcItem("rm"),
+			readline.PcItem("search"),
+		),
+		readline.PcItem("/snapshot",
+			readline.PcItem("save"),
+			readline.PcItem("restore"),
+			readline.PcItem("export"),
+			readline.PcItem("rm"),
+		),
 		readline.PcItem("/trace"),
 		readline.PcItem("/pilot",
 			readline.PcItem("plain"),
@@ -338,7 +371,10 @@ func newReadline(turns int) (*readline.Instance, error) {
 			readline.PcItem("ls"),
 			readline.PcItem("fire"),
 		),
-		readline.PcItem("/settings"),
+		readline.PcItem("/settings",
+			readline.PcItem("providers"),
+			readline.PcItem("set"),
+		),
 		readline.PcItem("/practice"),
 		readline.PcItem("/projects",
 			readline.PcItem("ls"),
