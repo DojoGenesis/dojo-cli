@@ -134,7 +134,7 @@ func telemetryBaseURL() string {
 	if u := os.Getenv("DOJO_TELEMETRY_URL"); u != "" {
 		return strings.TrimRight(u, "/")
 	}
-	return "https://dojo-telemetry.dojo.workers.dev"
+	return "https://dojo-telemetry.trespiesdesign.workers.dev"
 }
 
 // ─── HTTP helper ───────────────────────────────────────────────────────────
