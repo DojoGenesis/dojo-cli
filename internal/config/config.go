@@ -78,7 +78,7 @@ func defaults() *Config {
 	home, _ := os.UserHomeDir()
 	return &Config{
 		Gateway: GatewayConfig{
-			URL:     "http://localhost:8080",
+			URL:     "http://localhost:7340",
 			Timeout: "60s",
 		},
 		Plugins: PluginsConfig{

@@ -21,7 +21,7 @@ var version = "0.1.0"
 
 func main() {
 	var (
-		flagGateway     = flag.String("gateway", "", "Gateway URL (overrides config, e.g. http://localhost:8080)")
+		flagGateway     = flag.String("gateway", "", "Gateway URL (overrides config, e.g. http://localhost:7340)")
 		flagToken       = flag.String("token", "", "Bearer token for gateway auth")
 		flagVersion     = flag.Bool("version", false, "Print version and exit")
 		flagNoColor     = flag.Bool("no-color", false, "Disable color output")

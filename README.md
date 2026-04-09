@@ -15,7 +15,7 @@ The gateway does the heavy work: multi-provider model routing, semantic memory, 
 git clone https://github.com/DojoGenesis/dojo-cli && cd dojo-cli && make install
 
 # 2. Point at your gateway
-echo '{"gateway":{"url":"http://localhost:8080"}}' > ~/.dojo/settings.json
+echo '{"gateway":{"url":"http://localhost:7340"}}' > ~/.dojo/settings.json
 
 # 3. Run
 dojo
@@ -52,7 +52,7 @@ Settings are loaded from `~/.dojo/settings.json`. A missing file is not an error
 ```json
 {
   "gateway": {
-    "url": "http://localhost:8080",
+    "url": "http://localhost:7340",
     "timeout": "60s",
     "token": ""
   },
@@ -192,7 +192,7 @@ Session IDs follow the format `dojo-cli-YYYYMMDD-HHmmss` when created via `/sess
 **One-shot mode** is useful for scripting:
 
 ```bash
-dojo --one-shot "what models are available?" --gateway http://localhost:8080
+dojo --one-shot "what models are available?" --gateway http://localhost:7340
 ```
 
 **Shell completions:**

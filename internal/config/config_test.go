@@ -30,8 +30,8 @@ func TestLoad_NoSettingsFile_ReturnsDefaults(t *testing.T) {
 	if cfg == nil {
 		t.Fatal("Load() returned nil config")
 	}
-	if cfg.Gateway.URL != "http://localhost:8080" {
-		t.Errorf("default Gateway.URL: got %q, want %q", cfg.Gateway.URL, "http://localhost:8080")
+	if cfg.Gateway.URL != "http://localhost:7340" {
+		t.Errorf("default Gateway.URL: got %q, want %q", cfg.Gateway.URL, "http://localhost:7340")
 	}
 	if cfg.Gateway.Timeout != "60s" {
 		t.Errorf("default Gateway.Timeout: got %q, want %q", cfg.Gateway.Timeout, "60s")
