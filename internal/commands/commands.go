@@ -5,13 +5,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/DojoGenesis/dojo-cli/internal/client"
 	"github.com/DojoGenesis/dojo-cli/internal/config"
 	"github.com/DojoGenesis/dojo-cli/internal/hooks"
 	"github.com/DojoGenesis/dojo-cli/internal/plugins"
+	"github.com/DojoGenesis/dojo-cli/internal/tui"
 	"github.com/fatih/color"
 	gcolor "github.com/gookit/color"
 )
@@ -102,6 +107,8 @@ func (r *Registry) register() {
 	r.add(r.settingsCmd())
 	r.add(r.sessionCmd())
 	r.add(r.runCmd())
+	r.add(r.practiceCmd())
+	r.add(r.projectsCmd())
 }
 
 // ─── /help ────────────────────────────────────────────────────────────────────
@@ -122,6 +129,7 @@ func (r *Registry) helpCmd() Command {
 				{"/health", "gateway health + stats"},
 				{"/home", "workspace state overview"},
 				{"/model [ls]", "list available models and providers"},
+				{"/model set <name>", "switch to a different model (in-memory)"},
 				{"/tools [ls]", "list registered MCP tools"},
 				{"/agent ls", "list agents registered in the gateway"},
 				{"/agent dispatch <mode> <msg>", "create agent and stream response"},
@@ -140,6 +148,8 @@ func (r *Registry) helpCmd() Command {
 				{"/hooks ls", "list loaded hook rules from plugins"},
 				{"/hooks fire <event>", "manually fire a hook event (for testing)"},
 				{"/settings", "show config file path and active settings"},
+				{"/practice", "daily reflection prompts (rotates by day of week)"},
+				{"/projects ls", "local workspace view — cwd, plugins, session"},
 			}
 			for _, c := range cmds {
 				// Command names in golden-orange, descriptions in cloud-gray
@@ -222,9 +232,27 @@ func (r *Registry) modelCmd() Command {
 	return Command{
 		Name:    "model",
 		Aliases: []string{"models", "providers"},
-		Usage:   "/model [ls]",
-		Short:   "List models and providers",
+		Usage:   "/model [ls|set <name>]",
+		Short:   "List models and providers, or switch the active model",
 		Run: func(ctx context.Context, args []string) error {
+			// /model set <name>
+			if len(args) >= 2 && strings.ToLower(args[0]) == "set" {
+				newModel := args[1]
+				oldModel := r.cfg.Defaults.Model
+				if oldModel == "" {
+					oldModel = "(auto)"
+				}
+				r.cfg.Defaults.Model = newModel
+				fmt.Println()
+				color.New(color.Bold).Print(gcolor.HEX("#7fb88c").Sprint("  Model updated"))
+				fmt.Println()
+				printKV("old model", oldModel)
+				printKV("new model", newModel)
+				fmt.Println()
+				return nil
+			}
+
+			// /model or /model ls — list behavior
 			providers, err := r.gw.Providers(ctx)
 			if err != nil {
 				// fallback to /v1/models
@@ -233,7 +261,7 @@ func (r *Registry) modelCmd() Command {
 					return fmt.Errorf("could not fetch models: %w", err)
 				}
 				fmt.Println()
-				color.New(color.Bold).Printf(gcolor.HEX("#e8b04a").Sprintf("  Models (%d)\n\n", len(models)))
+				color.New(color.Bold).Print(gcolor.HEX("#e8b04a").Sprintf("  Models (%d)\n\n", len(models)))
 				for _, m := range models {
 					fmt.Printf("  %s  %s\n",
 						gcolor.HEX("#f4a261").Sprintf("%-42s", m.ID),
@@ -245,7 +273,7 @@ func (r *Registry) modelCmd() Command {
 			}
 
 			fmt.Println()
-			color.New(color.Bold).Printf(gcolor.HEX("#e8b04a").Sprintf("  Providers (%d)\n\n", len(providers)))
+			color.New(color.Bold).Print(gcolor.HEX("#e8b04a").Sprintf("  Providers (%d)\n\n", len(providers)))
 			for _, p := range providers {
 				status := colorStatus(p.Status)
 				caps := ""
@@ -274,7 +302,7 @@ func (r *Registry) toolsCmd() Command {
 				return fmt.Errorf("could not fetch tools: %w", err)
 			}
 			fmt.Println()
-			color.New(color.Bold).Printf(gcolor.HEX("#e8b04a").Sprintf("  Tools (%d)\n\n", len(tools)))
+			color.New(color.Bold).Print(gcolor.HEX("#e8b04a").Sprintf("  Tools (%d)\n\n", len(tools)))
 
 			// Group by namespace
 			ns := map[string][]client.Tool{}
@@ -393,7 +421,7 @@ func (r *Registry) agentCmd() Command {
 					return fmt.Errorf("could not fetch agents: %w", err)
 				}
 				fmt.Println()
-				color.New(color.Bold).Printf(gcolor.HEX("#e8b04a").Sprintf("  Agents (%d)\n\n", len(agents)))
+				color.New(color.Bold).Print(gcolor.HEX("#e8b04a").Sprintf("  Agents (%d)\n\n", len(agents)))
 				if len(agents) == 0 {
 					fmt.Println(gcolor.HEX("#94a3b8").Sprint("  No agents registered. Start the gateway with agent configs."))
 					fmt.Println()
@@ -498,9 +526,9 @@ func (r *Registry) skillCmd() Command {
 
 			fmt.Println()
 			if filter != "" {
-				color.New(color.Bold).Printf(gcolor.HEX("#e8b04a").Sprintf("  Skills matching %q (%d)\n\n", filter, len(skills)))
+				color.New(color.Bold).Print(gcolor.HEX("#e8b04a").Sprintf("  Skills matching %q (%d)\n\n", filter, len(skills)))
 			} else {
-				color.New(color.Bold).Printf(gcolor.HEX("#e8b04a").Sprintf("  Skills (%d)\n\n", len(skills)))
+				color.New(color.Bold).Print(gcolor.HEX("#e8b04a").Sprintf("  Skills (%d)\n\n", len(skills)))
 			}
 
 			if len(skills) == 0 {
@@ -607,7 +635,7 @@ func (r *Registry) gardenCmd() Command {
 					return fmt.Errorf("could not fetch seeds: %w", err)
 				}
 				fmt.Println()
-				color.New(color.Bold).Printf(gcolor.HEX("#e8b04a").Sprintf("  Seeds (%d)\n\n", len(seeds)))
+				color.New(color.Bold).Print(gcolor.HEX("#e8b04a").Sprintf("  Seeds (%d)\n\n", len(seeds)))
 				if len(seeds) == 0 {
 					fmt.Println(gcolor.HEX("#94a3b8").Sprint("  Garden is empty. Use /garden plant <text> to add a seed."))
 					fmt.Println()
@@ -639,7 +667,7 @@ func (r *Registry) trailCmd() Command {
 				return fmt.Errorf("could not fetch memory trail: %w", err)
 			}
 			fmt.Println()
-			color.New(color.Bold).Printf(gcolor.HEX("#e8b04a").Sprintf("  Memory Trail (%d)\n\n", len(memories)))
+			color.New(color.Bold).Print(gcolor.HEX("#e8b04a").Sprintf("  Memory Trail (%d)\n\n", len(memories)))
 			if len(memories) == 0 {
 				fmt.Println(gcolor.HEX("#94a3b8").Sprint("  No memory entries yet."))
 				fmt.Println()
@@ -685,29 +713,37 @@ func (r *Registry) traceCmd() Command {
 func (r *Registry) pilotCmd() Command {
 	return Command{
 		Name:  "pilot",
-		Usage: "/pilot",
-		Short: "Live SSE event stream (Ctrl+C to stop)",
+		Usage: "/pilot [plain]",
+		Short: "Live SSE event dashboard (Ctrl+C to stop)",
 		Run: func(ctx context.Context, args []string) error {
-			fmt.Println()
-			color.New(color.Bold).Print(gcolor.HEX("#e8b04a").Sprint("  Pilot — live event stream  (Ctrl+C to stop)"))
-			fmt.Println()
-			fmt.Println()
-
 			clientID := fmt.Sprintf("dojo-cli-%d", time.Now().UnixMilli())
-			fmt.Println(gcolor.HEX("#94a3b8").Sprintf("  client_id: %s", clientID))
-			fmt.Println()
 
-			return r.gw.PilotStream(ctx, clientID, func(chunk client.SSEChunk) {
-				ev := chunk.Event
-				if ev == "" {
-					ev = "message"
-				}
-				fmt.Printf("  %s  %s\n",
-					// Pilot events in info-steel
-					gcolor.HEX("#457b9d").Sprintf("%-16s", ev),
-					color.WhiteString(truncate(chunk.Data, 100)),
-				)
-			})
+			// /pilot plain — fallback text mode
+			if len(args) > 0 && args[0] == "plain" {
+				fmt.Println()
+				color.New(color.Bold).Print(gcolor.HEX("#e8b04a").Sprint("  Pilot — live event stream  (Ctrl+C to stop)"))
+				fmt.Println()
+				fmt.Println()
+				fmt.Println(gcolor.HEX("#94a3b8").Sprintf("  client_id: %s", clientID))
+				fmt.Println()
+
+				return r.gw.PilotStream(ctx, clientID, func(chunk client.SSEChunk) {
+					ev := chunk.Event
+					if ev == "" {
+						ev = "message"
+					}
+					fmt.Printf("  %s  %s\n",
+						gcolor.HEX("#457b9d").Sprintf("%-16s", ev),
+						color.WhiteString(truncate(chunk.Data, 100)),
+					)
+				})
+			}
+
+			// Default: Bubbletea TUI dashboard
+			model := tui.NewPilotModel(r.gw, clientID)
+			p := tea.NewProgram(model, tea.WithAltScreen())
+			_, err := p.Run()
+			return err
 		},
 	}
 }
@@ -746,7 +782,7 @@ func (r *Registry) hooksCmd() Command {
 				}
 
 				fmt.Println()
-				color.New(color.Bold).Printf(gcolor.HEX("#e8b04a").Sprintf("  Hooks (%d rules across %d plugins)\n\n", totalRules, len(r.plgs)))
+				color.New(color.Bold).Print(gcolor.HEX("#e8b04a").Sprintf("  Hooks (%d rules across %d plugins)\n\n", totalRules, len(r.plgs)))
 
 				if totalRules == 0 {
 					fmt.Println(gcolor.HEX("#94a3b8").Sprintf("  No hook rules loaded. Place plugins in %s", r.cfg.Plugins.Path))
@@ -855,6 +891,11 @@ func (r *Registry) sessionCmd() Command {
 
 // ─── /run ─────────────────────────────────────────────────────────────────────
 
+const (
+	runMaxPollDuration  = 5 * time.Minute
+	runMaxConsecErrors  = 10
+)
+
 func (r *Registry) runCmd() Command {
 	return Command{
 		Name:  "run",
@@ -874,12 +915,13 @@ func (r *Registry) runCmd() Command {
 					DAG: []client.ToolInvocation{
 						{
 							ID:        "step1",
-							ToolName:  "chat",
-							Input:     map[string]any{"message": task, "session_id": *r.session},
+							ToolName:  "orchestrate",
+							Input:     map[string]any{"message": task},
 							DependsOn: []string{},
 						},
 					},
 				},
+				UserID: "", // guest
 			}
 
 			fmt.Println()
@@ -890,25 +932,38 @@ func (r *Registry) runCmd() Command {
 				return fmt.Errorf("orchestration failed: %w", err)
 			}
 
+			if status.ExecutionID == "" {
+				return fmt.Errorf("gateway returned empty execution ID")
+			}
+
 			printKV("execution_id", status.ExecutionID)
 			printKV("status", colorStatus(status.Status))
 			fmt.Println()
 
-			// Poll every second until completed or failed.
+			// Poll every second until completed/failed, with timeout and error limit.
 			seen := map[string]string{} // node id → last printed status
 			ticker := time.NewTicker(time.Second)
 			defer ticker.Stop()
+			deadline := time.After(runMaxPollDuration)
+			consecErrors := 0
 
 			for {
 				select {
 				case <-ctx.Done():
 					return nil
+				case <-deadline:
+					return fmt.Errorf("orchestration timed out after %s", runMaxPollDuration)
 				case <-ticker.C:
 					dag, err := r.gw.OrchestrationDAG(ctx, status.ExecutionID)
 					if err != nil {
+						consecErrors++
 						fmt.Println(gcolor.HEX("#e63946").Sprint("  poll error: " + err.Error()))
+						if consecErrors >= runMaxConsecErrors {
+							return fmt.Errorf("too many consecutive poll errors (%d)", consecErrors)
+						}
 						continue
 					}
+					consecErrors = 0
 
 					for _, node := range dag.Nodes {
 						id, _ := node["id"].(string)
@@ -945,6 +1000,123 @@ func (r *Registry) runCmd() Command {
 	}
 }
 
+// ─── /practice ───────────────────────────────────────────────────────────────
+
+func (r *Registry) practiceCmd() Command {
+	return Command{
+		Name:  "practice",
+		Usage: "/practice",
+		Short: "Daily reflection prompts (rotates by day of week)",
+		Run: func(ctx context.Context, args []string) error {
+			now := time.Now()
+			dayName := now.Weekday().String()
+
+			var prompts []string
+			switch now.Weekday() {
+			case time.Monday:
+				prompts = []string{
+					"What tensions are you noticing?",
+					"What surprised you last week?",
+					"What would you do differently?",
+				}
+			case time.Tuesday:
+				prompts = []string{
+					"What's the riskiest assumption right now?",
+					"Where are you over-invested?",
+					"What can you let go of?",
+				}
+			case time.Wednesday:
+				prompts = []string{
+					"What's working that you should double down on?",
+					"Who needs your attention?",
+					"What decision are you avoiding?",
+				}
+			case time.Thursday:
+				prompts = []string{
+					"What would you ship today if forced to?",
+					"Where is complexity hiding?",
+					"What's the simplest next step?",
+				}
+			case time.Friday:
+				prompts = []string{
+					"What did you learn this week?",
+					"What would you celebrate?",
+					"What would you change?",
+				}
+			default: // Saturday, Sunday
+				prompts = []string{
+					"Rest. Reflect. Return Monday with clarity.",
+				}
+			}
+
+			fmt.Println()
+			// Header: date in warm-amber, day in golden-orange
+			color.New(color.Bold).Print(gcolor.HEX("#e8b04a").Sprint("  Practice — " + now.Format("2006-01-02")))
+			fmt.Print("  ")
+			fmt.Println(gcolor.HEX("#f4a261").Sprint(dayName))
+			fmt.Println()
+			for i, p := range prompts {
+				fmt.Printf("  %s %s\n",
+					gcolor.HEX("#e8b04a").Sprintf("%d.", i+1),
+					gcolor.HEX("#94a3b8").Sprint(p),
+				)
+			}
+			fmt.Println()
+			return nil
+		},
+	}
+}
+
+// ─── /projects ───────────────────────────────────────────────────────────────
+
+func (r *Registry) projectsCmd() Command {
+	return Command{
+		Name:  "projects",
+		Usage: "/projects ls",
+		Short: "Local workspace view — cwd, plugins, session",
+		Run: func(ctx context.Context, args []string) error {
+			fmt.Println()
+			color.New(color.Bold).Print(gcolor.HEX("#e8b04a").Sprint("  Projects — local workspace"))
+			fmt.Println()
+			fmt.Println()
+
+			// Current working directory name as the project
+			cwd, err := os.Getwd()
+			if err != nil {
+				cwd = "(unknown)"
+			}
+			project := filepath.Base(cwd)
+			printKV("project", project)
+			printKV("path", cwd)
+
+			// Check for .ada/disposition.yaml
+			adaPath := filepath.Join(cwd, ".ada", "disposition.yaml")
+			if data, readErr := os.ReadFile(adaPath); readErr == nil {
+				// Extract active_mode from the YAML with a simple scan (no yaml dep needed)
+				activeMode := ""
+				for _, line := range strings.Split(string(data), "\n") {
+					line = strings.TrimSpace(line)
+					if strings.HasPrefix(line, "active_mode:") {
+						activeMode = strings.TrimSpace(strings.TrimPrefix(line, "active_mode:"))
+						break
+					}
+				}
+				if activeMode == "" {
+					activeMode = "(set)"
+				}
+				printKV("disposition", activeMode)
+			} else {
+				printKV("disposition", gcolor.HEX("#94a3b8").Sprint("no .ada/disposition.yaml"))
+			}
+
+			printKV("plugins loaded", fmt.Sprintf("%d", len(r.plgs)))
+			printKV("session", *r.session)
+			fmt.Println()
+			return nil
+		},
+	}
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 // printKV prints a key-value pair: key in cloud-gray, value in white.
@@ -956,17 +1128,18 @@ func printKV(key, value string) {
 }
 
 func truncate(s string, n int) string {
-	if len(s) <= n {
+	runes := []rune(s)
+	if len(runes) <= n {
 		return s
 	}
-	return s[:n-1] + "…"
+	return string(runes[:n-1]) + "…"
 }
 
 func colorStatus(s string) string {
 	switch strings.ToLower(s) {
-	case "ok", "healthy", "active", "running", "ready":
+	case "ok", "healthy", "active", "running", "ready", "completed":
 		return gcolor.HEX("#7fb88c").Sprint(s) // soft-sage
-	case "loading", "starting":
+	case "loading", "starting", "submitted", "pending":
 		return gcolor.HEX("#e8b04a").Sprint(s) // warm-amber
 	case "", "unknown":
 		return gcolor.HEX("#94a3b8").Sprint("unknown") // cloud-gray

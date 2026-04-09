@@ -34,8 +34,8 @@ func New(ps []plugins.Plugin) *Runner {
 // Only "command" type hooks are executed in Phase 1; prompt/agent/http hooks
 // are recognised but skipped.
 // Async hooks are run in a goroutine. Sync hooks block until completion.
-// ctx cancellation prevents async hooks from starting but does not kill
-// already-running processes.
+// ctx cancellation prevents new async hooks from starting and kills
+// already-running processes (exec.CommandContext sends SIGKILL).
 func (r *Runner) Fire(ctx context.Context, event string, payload map[string]any) error {
 	for _, p := range r.plugins {
 		for _, rule := range p.HookRules {

@@ -9,15 +9,17 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
 
 // Client talks to an AgenticGateway instance.
 type Client struct {
-	base   string
-	token  string
-	http   *http.Client
+	base       string
+	token      string
+	http       *http.Client
+	streamHTTP *http.Client // no timeout — for SSE streaming
 }
 
 // New creates a Client. timeout is a Go duration string (e.g. "60s").
@@ -27,9 +29,10 @@ func New(baseURL, token, timeout string) *Client {
 		d = 60 * time.Second
 	}
 	return &Client{
-		base:  strings.TrimRight(baseURL, "/"),
-		token: token,
-		http:  &http.Client{Timeout: d},
+		base:       strings.TrimRight(baseURL, "/"),
+		token:      token,
+		http:       &http.Client{Timeout: d},
+		streamHTTP: &http.Client{}, // no timeout for long-lived SSE
 	}
 }
 
@@ -151,7 +154,7 @@ func (c *Client) Tools(ctx context.Context) ([]Tool, error) {
 			Count int    `json:"count"`
 		}
 		if err2 := c.get(ctx, "/v1/tools", &fallback); err2 != nil {
-			return nil, err
+			return nil, fmt.Errorf("both tool endpoints failed: %w; fallback: %v", err, err2)
 		}
 		return fallback.Tools, nil
 	}
@@ -320,7 +323,7 @@ func (c *Client) ChatStream(ctx context.Context, req ChatRequest, onChunk func(S
 		httpReq.Header.Set("Authorization", "Bearer "+c.token)
 	}
 
-	resp, err := c.http.Do(httpReq)
+	resp, err := c.streamHTTP.Do(httpReq)
 	if err != nil {
 		return err
 	}
@@ -335,8 +338,11 @@ func (c *Client) ChatStream(ctx context.Context, req ChatRequest, onChunk func(S
 }
 
 // parseSSE reads an SSE stream and calls onChunk for each data line.
+// Per SSE spec, the event field resets on blank lines (event dispatch boundary),
+// not after each data line. Buffer is raised to 1MB to handle large JSON payloads.
 func parseSSE(r io.Reader, onChunk func(SSEChunk)) error {
 	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024) // up to 1MB lines
 	var event string
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -349,8 +355,8 @@ func parseSSE(r io.Reader, onChunk func(SSEChunk)) error {
 				return nil
 			}
 			onChunk(SSEChunk{Event: event, Data: data})
-			event = ""
 		case line == "":
+			// SSE dispatch boundary — reset event for the next block
 			event = ""
 		}
 	}
@@ -408,12 +414,9 @@ func (c *Client) Memories(ctx context.Context) ([]Memory, error) {
 // PilotStream opens GET /events and calls onChunk for each SSE event.
 // It runs until ctx is cancelled or the stream closes.
 func (c *Client) PilotStream(ctx context.Context, clientID string, onChunk func(SSEChunk)) error {
-	url := c.base + "/events?client_id=" + clientID
+	u := c.base + "/events?" + url.Values{"client_id": {clientID}}.Encode()
 
-	// Use a client with no timeout for the long-lived SSE connection.
-	httpClient := &http.Client{}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return err
 	}
@@ -422,7 +425,7 @@ func (c *Client) PilotStream(ctx context.Context, clientID string, onChunk func(
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
 
-	resp, err := httpClient.Do(req)
+	resp, err := c.streamHTTP.Do(req)
 	if err != nil {
 		return err
 	}
@@ -495,7 +498,7 @@ func (c *Client) AgentChatStream(ctx context.Context, agentID string, req AgentC
 		httpReq.Header.Set("Authorization", "Bearer "+c.token)
 	}
 
-	resp, err := c.http.Do(httpReq)
+	resp, err := c.streamHTTP.Do(httpReq)
 	if err != nil {
 		return err
 	}

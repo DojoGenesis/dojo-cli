@@ -1,4 +1,4 @@
-dojo
+/dojo
 *.db
 *.db-shm
 *.db-wal

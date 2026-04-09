@@ -276,7 +276,7 @@ func extractText(chunk client.SSEChunk) string {
 
 // runPlain is the fallback when readline is unavailable (piped input, CI).
 func (r *REPL) runPlain(ctx context.Context) error {
-	printWelcome(r.cfg, r.session)
+	// Note: printWelcome is already called by Run() before fallback here.
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
 		fmt.Print("> ")
@@ -303,7 +303,10 @@ func newReadline(turns int) (*readline.Instance, error) {
 		readline.PcItem("/help"),
 		readline.PcItem("/health"),
 		readline.PcItem("/home"),
-		readline.PcItem("/model"),
+		readline.PcItem("/model",
+			readline.PcItem("ls"),
+			readline.PcItem("set"),
+		),
 		readline.PcItem("/tools"),
 		readline.PcItem("/agent",
 			readline.PcItem("ls"),
@@ -328,12 +331,18 @@ func newReadline(turns int) (*readline.Instance, error) {
 		),
 		readline.PcItem("/trail"),
 		readline.PcItem("/trace"),
-		readline.PcItem("/pilot"),
+		readline.PcItem("/pilot",
+			readline.PcItem("plain"),
+		),
 		readline.PcItem("/hooks",
 			readline.PcItem("ls"),
 			readline.PcItem("fire"),
 		),
 		readline.PcItem("/settings"),
+		readline.PcItem("/practice"),
+		readline.PcItem("/projects",
+			readline.PcItem("ls"),
+		),
 		readline.PcItem("exit"),
 	)
 
