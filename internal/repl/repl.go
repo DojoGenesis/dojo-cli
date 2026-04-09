@@ -65,7 +65,7 @@ func vitalityPrompt(turns int) string {
 	sep := gcolor.HEX("#94a3b8").Sprint(" › ")
 	switch {
 	case turns == 0:
-		dot := gcolor.HEX("#1a3a4a").Sprint("●")
+		dot := gcolor.HEX("#64748b").Sprint("●")
 		name := gcolor.HEX("#94a3b8").Sprint("dojo")
 		return dot + " " + name + sep
 	case turns < 5:
@@ -377,7 +377,7 @@ func printWelcome(cfg *config.Config, session string) {
 	// Gateway line: label in cloud-gray, value in neutral-dark
 	fmt.Printf("%s%s\n",
 		gcolor.HEX("#94a3b8").Sprint("  gateway: "),
-		gcolor.HEX("#1a3a4a").Sprint(cfg.Gateway.URL),
+		gcolor.HEX("#64748b").Sprint(cfg.Gateway.URL),
 	)
 
 	// Hint line: cloud-gray

@@ -342,9 +342,9 @@ func (r *Registry) toolsCmd() Command {
 			for _, n := range order {
 				// Glass-effect section divider
 				fmt.Printf("  %s %s %s\n",
-					gcolor.HEX("#1a3a4a").Sprint("────"),
+					gcolor.HEX("#64748b").Sprint("────"),
 					gcolor.HEX("#e8b04a").Sprint("["+n+"]"),
-					gcolor.HEX("#1a3a4a").Sprint("────"),
+					gcolor.HEX("#64748b").Sprint("────"),
 				)
 				for _, t := range ns[n] {
 					fmt.Printf("    %s  %s\n",
@@ -613,9 +613,9 @@ func (r *Registry) skillCmd() Command {
 			for _, cat := range order {
 				// Glass-effect section divider
 				fmt.Printf("  %s %s %s\n",
-					gcolor.HEX("#1a3a4a").Sprint("────"),
+					gcolor.HEX("#64748b").Sprint("────"),
 					gcolor.HEX("#e8b04a").Sprint("["+cat+"]"),
-					gcolor.HEX("#1a3a4a").Sprint("────"),
+					gcolor.HEX("#64748b").Sprint("────"),
 				)
 				for _, s := range cats[cat] {
 					plugin := ""
@@ -856,9 +856,9 @@ func (r *Registry) hooksCmd() Command {
 					}
 					// Glass-effect section divider
 					fmt.Printf("  %s %s %s\n",
-						gcolor.HEX("#1a3a4a").Sprint("────"),
+						gcolor.HEX("#64748b").Sprint("────"),
 						gcolor.HEX("#e8b04a").Sprint("["+p.Name+"]"),
-						gcolor.HEX("#1a3a4a").Sprint("────"),
+						gcolor.HEX("#64748b").Sprint("────"),
 					)
 					for _, rule := range p.HookRules {
 						for _, h := range rule.Hooks {
