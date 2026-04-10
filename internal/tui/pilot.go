@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/DojoGenesis/dojo-cli/internal/client"
+	"github.com/DojoGenesis/dojo-cli/internal/telemetry"
 )
 
 // ─── Dojo Genesis Color Palette ─────────────────────────────────────────────
@@ -93,8 +94,8 @@ type sseDoneMsg struct{}
 // ─── Model ───────────────────────────────────────────────────────────────────
 
 // PilotModel is the Bubbletea model for the live Pilot event-stream dashboard.
-// It connects to the gateway's /events SSE endpoint and renders a scrollable
-// log of incoming events with connection status and elapsed-time tracking.
+// It connects to the gateway's /events SSE endpoint and renders a multi-panel
+// TUI with event log, context panel, and stats panel.
 type PilotModel struct {
 	gw        *client.Client
 	clientID  string
@@ -117,6 +118,15 @@ type PilotModel struct {
 	lastModel      string
 	costRateIn     float64 // per-token input rate (USD)
 	costRateOut    float64 // per-token output rate (USD)
+
+	// Telemetry sink — pushes SSE events to the D1 telemetry store.
+	// nil when telemetry is disabled or unavailable.
+	sink *telemetry.Sink
+
+	// Multi-panel state
+	focusPanel PanelFocus
+	pilotCtx   PilotContext
+	stats      PilotStats
 }
 
 // NewPilotModel constructs a PilotModel ready to be passed to tea.NewProgram.
@@ -124,7 +134,7 @@ type PilotModel struct {
 // that will be appended to the /events URL as ?client_id=<clientID>.
 func NewPilotModel(gw *client.Client, clientID string) PilotModel {
 	ctx, cancel := context.WithCancel(context.Background())
-	return PilotModel{
+	m := PilotModel{
 		gw:          gw,
 		clientID:    clientID,
 		events:      make([]ParsedEvent, 0, 50),
@@ -134,10 +144,18 @@ func NewPilotModel(gw *client.Client, clientID string) PilotModel {
 		costRateIn:  0.000003,  // default: sonnet input rate
 		costRateOut: 0.000015,  // default: sonnet output rate
 	}
+	// Initialise the telemetry sink. It is always created so that events are
+	// buffered; Start() launches the background flush goroutine.
+	m.sink = telemetry.New(clientID)
+	return m
 }
 
-// Init starts the SSE listener goroutine and returns its driving Cmd.
+// Init starts the SSE listener goroutine and the telemetry sink, then
+// returns the driving Cmd.
 func (m PilotModel) Init() tea.Cmd {
+	if m.sink != nil {
+		m.sink.Start(m.ctx)
+	}
 	return m.listenSSE()
 }
 
@@ -181,8 +199,21 @@ func (m PilotModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "q", "esc", "ctrl+c":
+			if m.sink != nil {
+				m.sink.Close()
+			}
 			m.cancel()
 			return m, tea.Quit
+		case "tab":
+			// Cycle focus: EventLog -> Context -> Stats -> EventLog
+			m.focusPanel = (m.focusPanel + 1) % 3
+		case "shift+tab":
+			// Reverse cycle
+			if m.focusPanel == 0 {
+				m.focusPanel = FocusStats
+			} else {
+				m.focusPanel--
+			}
 		case "up", "k":
 			if m.scroll > 0 {
 				m.scroll--
@@ -208,6 +239,22 @@ func (m PilotModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.count++
 		m.connected = true
 
+		// --- Stats: accumulate category counts ---
+		m.stats.TotalEvents = m.count
+		switch entry.Category {
+		case CategoryCore:
+			m.stats.CoreEvents++
+		case CategoryTrace:
+			m.stats.TraceEvents++
+		case CategoryArtifact:
+			m.stats.ArtifactEvents++
+		case CategoryOrchestration:
+			m.stats.OrchEvents++
+		}
+		if entry.Severity == SeverityError {
+			m.stats.ErrorCount++
+		}
+
 		// --- Cost tracking: accumulate tokens from "complete" events ---
 		if entry.EventType == "complete" {
 			if usage, ok := entry.Parsed["usage"].(map[string]interface{}); ok {
@@ -226,9 +273,11 @@ func (m PilotModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if entry.EventType == "provider_selected" {
 			if p, ok := entry.Parsed["provider"].(string); ok {
 				m.lastProvider = p
+				m.pilotCtx.Provider = p
 			}
 			if model, ok := entry.Parsed["model"].(string); ok {
 				m.lastModel = model
+				m.pilotCtx.Model = model
 				lower := strings.ToLower(model)
 				switch {
 				case strings.Contains(lower, "haiku"):
@@ -242,6 +291,57 @@ func (m PilotModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.costRateOut = 0.000015
 				}
 			}
+		}
+
+		// --- Context: extract from intent_classified events ---
+		if entry.EventType == "intent_classified" {
+			if intent, ok := entry.Parsed["intent"].(string); ok {
+				m.pilotCtx.Specialist = intent
+			}
+			if disp, ok := entry.Parsed["disposition"].(string); ok {
+				m.pilotCtx.Disposition = disp
+			}
+			if plugin, ok := entry.Parsed["plugin"].(string); ok {
+				m.pilotCtx.Plugin = plugin
+			}
+			if sessionID, ok := entry.Parsed["session_id"].(string); ok {
+				m.pilotCtx.SessionID = sessionID
+			}
+		}
+
+		// --- Context: extract project name ---
+		if entry.EventType == "project_switched" {
+			if proj, ok := entry.Parsed["project_name"].(string); ok {
+				m.pilotCtx.ProjectName = proj
+			}
+		}
+
+		// --- Context: extract skills ---
+		if entry.EventType == "tool_invoked" {
+			if skill, ok := entry.Parsed["skill"].(string); ok && skill != "" {
+				// Append if not already tracked (keep unique, max 5).
+				found := false
+				for _, s := range m.pilotCtx.Skills {
+					if s == skill {
+						found = true
+						break
+					}
+				}
+				if !found && len(m.pilotCtx.Skills) < 5 {
+					m.pilotCtx.Skills = append(m.pilotCtx.Skills, skill)
+				}
+			}
+		}
+
+		// Sync cost/token stats.
+		m.stats.TotalCostUSD = m.totalCostUSD
+		m.stats.TotalTokensIn = m.totalTokensIn
+		m.stats.TotalTokensOut = m.totalTokensOut
+		m.stats.Elapsed = time.Since(m.startTime)
+
+		// Push event to telemetry sink (best-effort, non-blocking).
+		if m.sink != nil {
+			m.sink.Ingest(entry.EventType, time.Now().UnixMilli(), entry.Parsed)
 		}
 
 		// Auto-scroll to bottom when user is at (or near) bottom.
@@ -268,10 +368,10 @@ func (m PilotModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// View renders the full dashboard.
+// View renders the full multi-panel dashboard.
 func (m PilotModel) View() string {
 	if m.width == 0 {
-		return "Connecting to Pilot stream…\n"
+		return "Connecting to Pilot stream...\n"
 	}
 
 	var sb strings.Builder
@@ -280,61 +380,49 @@ func (m PilotModel) View() string {
 	header := styleHeader.Render("  Pilot Dashboard")
 	sessionLabel := styleSubtle.Render(fmt.Sprintf("  client: %s", m.clientID))
 	sb.WriteString(header + "   " + sessionLabel + "\n")
-	sb.WriteString(styleSubtle.Render(strings.Repeat("─", m.width)) + "\n")
 
-	// ── Event log ──
-	logHeight := m.height - 5 // reserve 2 header + 1 sep + 2 status lines
-	if logHeight < 1 {
-		logHeight = 1
+	// ── Panel layout ──
+	// Reserve: 1 header line + 1 status bar line = 2 lines overhead.
+	panelHeight := m.height - 2
+	if panelHeight < 4 {
+		panelHeight = 4
 	}
 
-	start := m.scroll
-	end := start + logHeight
-	if end > len(m.events) {
-		end = len(m.events)
+	// Left panel: 60% width. Right panel: 40% width.
+	leftW := m.width * 60 / 100
+	rightW := m.width - leftW
+	if leftW < 20 {
+		leftW = 20
+	}
+	if rightW < 16 {
+		rightW = 16
 	}
 
-	visible := m.events
-	if start < len(visible) {
-		visible = visible[start:end]
-	} else {
-		visible = nil
+	// Right side is split vertically: context (top 40%), stats (bottom 60%).
+	ctxH := panelHeight * 40 / 100
+	if ctxH < 4 {
+		ctxH = 4
+	}
+	statsH := panelHeight - ctxH
+	if statsH < 4 {
+		statsH = 4
 	}
 
-	for _, e := range visible {
-		ts := styleTimestamp.Render(e.Time)
-		evType := styleEventType.Render(padRight(e.EventType, 16))
-		// Truncate summary to terminal width minus fixed prefix width (28 chars).
-		summary := e.Summary
-		maxData := m.width - 28
-		if maxData < 10 {
-			maxData = 10
-		}
-		if len(summary) > maxData {
-			summary = summary[:maxData-1] + "…"
-		}
-		// Color-code by severity.
-		var styledSummary string
-		switch e.Severity {
-		case SeverityError:
-			styledSummary = styleStatusErr.Render(summary)
-		case SeverityWarning:
-			styledSummary = styleCostYellow.Render(summary)
-		case SeveritySuccess:
-			styledSummary = styleStatusOK.Render(summary)
-		default:
-			styledSummary = styleDim.Render(summary)
-		}
-		sb.WriteString(fmt.Sprintf("  %s  %s  %s\n", ts, evType, styledSummary))
-	}
+	// Sync elapsed time for stats display.
+	statsSnap := m.stats
+	statsSnap.Elapsed = time.Since(m.startTime)
 
-	// Pad remaining lines so the status bar stays at the bottom.
-	for i := len(visible); i < logHeight; i++ {
-		sb.WriteString("\n")
-	}
+	// Render each panel.
+	eventPanel := RenderEventPanel(m.events, m.scroll, leftW, panelHeight, m.focusPanel == FocusEventLog)
+	contextPanel := RenderContextPanel(m.pilotCtx, rightW, ctxH, m.focusPanel == FocusContext)
+	statsPanel := RenderStatsPanel(statsSnap, rightW, statsH, m.focusPanel == FocusStats)
 
-	// ── Separator ──
-	sb.WriteString(styleSubtle.Render(strings.Repeat("─", m.width)) + "\n")
+	// Stack context + stats vertically on the right.
+	rightSide := lipgloss.JoinVertical(lipgloss.Left, contextPanel, statsPanel)
+
+	// Join left + right horizontally.
+	panels := lipgloss.JoinHorizontal(lipgloss.Top, eventPanel, rightSide)
+	sb.WriteString(panels + "\n")
 
 	// ── Status bar ──
 	var statusDot string
@@ -354,13 +442,11 @@ func (m PilotModel) View() string {
 	}
 
 	elapsed := time.Since(m.startTime).Truncate(time.Second)
-	statusLeft := fmt.Sprintf("  %s  %s", statusDot, connLabel)
-	statusMid := styleSubtle.Render(fmt.Sprintf("%d events | %s", m.count, elapsed))
+	statusLeft := fmt.Sprintf(" %s %s", statusDot, connLabel)
 
 	// Build cost segment for the right side.
 	var costSegment string
 	if m.totalTokensIn > 0 || m.totalTokensOut > 0 {
-		// Cost string with color based on spend.
 		costStr := fmt.Sprintf("$%.4f", m.totalCostUSD)
 		var styledCost string
 		switch {
@@ -371,44 +457,37 @@ func (m PilotModel) View() string {
 		default:
 			styledCost = styleCostGreen.Render(costStr)
 		}
-
 		totalTokens := m.totalTokensIn + m.totalTokensOut
-		tokenStr := styleDim.Render(formatTokens(totalTokens) + " tokens")
-
-		// Provider/model label (truncated if too long).
-		var modelLabel string
-		if m.lastProvider != "" && m.lastModel != "" {
-			ml := m.lastProvider + "/" + m.lastModel
-			if len(ml) > 24 {
-				ml = ml[:23] + "…"
-			}
-			modelLabel = styleAccent.Render(ml)
-		}
-
-		if modelLabel != "" {
-			costSegment = styledCost + styleDim.Render(" | ") + tokenStr + styleDim.Render(" | ") + modelLabel
-		} else {
-			costSegment = styledCost + styleDim.Render(" | ") + tokenStr
-		}
+		tokenStr := styleDim.Render(formatTokens(totalTokens) + " tok")
+		costSegment = styledCost + styleDim.Render(" | ") + tokenStr
 	}
 
-	// Compose the full status line.
+	// Focus indicator.
+	var focusLabel string
+	switch m.focusPanel {
+	case FocusEventLog:
+		focusLabel = "Events"
+	case FocusContext:
+		focusLabel = "Context"
+	case FocusStats:
+		focusLabel = "Stats"
+	}
+
+	helpKeys := styleSubtle.Render(fmt.Sprintf("Tab: switch | j/k: scroll | q: quit | %d events | %s | [%s]",
+		m.count, elapsed, focusLabel))
+
 	if costSegment != "" {
-		// Three-part layout: left | mid ... cost right
-		leftAndMid := statusLeft + styleDim.Render(" | ") + statusMid
-		gap := m.width - lipgloss.Width(leftAndMid) - lipgloss.Width(costSegment) - 1
+		gap := m.width - lipgloss.Width(statusLeft) - lipgloss.Width(costSegment) - lipgloss.Width(helpKeys) - 4
 		if gap < 1 {
 			gap = 1
 		}
-		sb.WriteString(leftAndMid + strings.Repeat(" ", gap) + costSegment + "\n")
+		sb.WriteString(statusLeft + styleDim.Render(" | ") + helpKeys + strings.Repeat(" ", gap) + costSegment)
 	} else {
-		// No cost data yet — original layout.
-		statusRight := styleSubtle.Render(fmt.Sprintf("events: %d   elapsed: %s   q/esc quit", m.count, elapsed))
-		gap := m.width - lipgloss.Width(statusLeft) - lipgloss.Width(statusRight)
+		gap := m.width - lipgloss.Width(statusLeft) - lipgloss.Width(helpKeys) - 2
 		if gap < 1 {
 			gap = 1
 		}
-		sb.WriteString(statusLeft + strings.Repeat(" ", gap) + statusRight + "\n")
+		sb.WriteString(statusLeft + styleDim.Render(" | ") + helpKeys + strings.Repeat(" ", gap))
 	}
 
 	return sb.String()
@@ -416,9 +495,10 @@ func (m PilotModel) View() string {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-// visibleLines returns the number of event rows that fit in the current terminal.
+// visibleLines returns the number of event rows that fit in the event panel.
 func (m PilotModel) visibleLines() int {
-	n := m.height - 5
+	// Panel height = total height - 2 (header + status bar) - 2 (panel border).
+	n := m.height - 4
 	if n < 1 {
 		return 1
 	}
