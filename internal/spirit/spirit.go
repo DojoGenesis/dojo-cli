@@ -100,6 +100,7 @@ type SpiritState struct {
 	TotalPractice   int               `json:"total_practice"`
 	TotalSeeds      int               `json:"total_seeds"`
 	TotalPlugins    int               `json:"total_plugins"`
+	TotalGuides     int               `json:"total_guides"`
 	StreakDays      int               `json:"streak_days"`
 	LastActiveDate  string            `json:"last_active_date"`      // YYYY-MM-DD
 	StreakBonusDate string            `json:"streak_bonus_date"`     // YYYY-MM-DD of last streak bonus
@@ -112,19 +113,21 @@ type SpiritState struct {
 
 // xpTable maps action names to XP values.
 var xpTable = map[string]int{
-	"session_start":      25,
-	"command_run":        5,
-	"chat_message":       5,
-	"agent_dispatched":   50,
-	"skill_invoked":      30,
-	"artifact_saved":     20,
-	"project_created":    100,
-	"practice_completed": 40,
-	"seed_planted":       15,
-	"plugin_installed":   75,
-	"model_changed":      10,
-	"phase_advanced":     60,
-	"belt_promotion":     200,
+	"session_start":        25,
+	"command_run":          5,
+	"chat_message":         5,
+	"agent_dispatched":     50,
+	"skill_invoked":        30,
+	"artifact_saved":       20,
+	"project_created":      100,
+	"practice_completed":   40,
+	"seed_planted":         15,
+	"plugin_installed":     75,
+	"model_changed":        10,
+	"phase_advanced":       60,
+	"belt_promotion":       200,
+	"guide_step_completed": 15,
+	"guide_completed":      75,
 }
 
 // XPForAction returns the XP value for a named action. Returns 0 for unknown actions.
@@ -248,6 +251,12 @@ func AllAchievements() []Achievement {
 			func(s *SpiritState) bool { return s.StreakDays >= 7 }},
 		{"philosopher", "Philosopher", "Complete /practice 10 times", "&", 200,
 			func(s *SpiritState) bool { return s.TotalPractice >= 10 }},
+		{"first_guide", "First Guide", "Complete your first guided tutorial", ">", 100,
+			func(s *SpiritState) bool { return s.TotalGuides >= 1 }},
+		{"guide_explorer", "Guide Explorer", "Complete 5 guides", ">>", 250,
+			func(s *SpiritState) bool { return s.TotalGuides >= 5 }},
+		{"guide_master", "Guide Master", "Complete all 17 built-in guides", ">>>", 800,
+			func(s *SpiritState) bool { return s.TotalGuides >= 17 }},
 	}
 }
 

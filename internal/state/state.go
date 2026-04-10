@@ -12,12 +12,20 @@ import (
 	"github.com/DojoGenesis/dojo-cli/internal/spirit"
 )
 
+// GuideProgress tracks the user's active and completed guides.
+type GuideProgress struct {
+	Active    string   `json:"active,omitempty"`    // guide ID currently in progress
+	Step      int      `json:"step"`                // current step index (0-based)
+	Completed []string `json:"completed,omitempty"` // IDs of finished guides
+}
+
 // State persists across REPL sessions at ~/.dojo/state.json.
 type State struct {
 	LastSessionID string           `json:"last_session_id,omitempty"`
 	SetupComplete bool             `json:"setup_complete,omitempty"`
 	Agents        map[string]Agent `json:"agents,omitempty"` // keyed by agent_id
 	Spirit        spirit.SpiritState `json:"spirit,omitempty"`
+	Guide         GuideProgress    `json:"guide,omitempty"`
 }
 
 // Agent holds metadata about a known agent.

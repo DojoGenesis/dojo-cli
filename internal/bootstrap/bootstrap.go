@@ -101,7 +101,7 @@ func writeSettings(dojoDir string, opts Options) (bool, error) {
 
 	gwURL := opts.GatewayURL
 	if gwURL == "" {
-		gwURL = "http://localhost:7340"
+		gwURL = config.DefaultGatewayURL
 	}
 
 	cfg := map[string]any{

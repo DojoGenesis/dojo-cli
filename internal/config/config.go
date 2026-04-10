@@ -10,6 +10,10 @@ import (
 	"time"
 )
 
+// DefaultGatewayURL is the fallback gateway address used by both config defaults
+// and the bootstrap initializer so the value is never duplicated.
+const DefaultGatewayURL = "http://localhost:7340"
+
 // Config is the dojo CLI configuration, loaded from ~/.dojo/settings.json.
 type Config struct {
 	Gateway  GatewayConfig  `json:"gateway"`
@@ -193,7 +197,7 @@ func defaults() *Config {
 	home, _ := os.UserHomeDir()
 	return &Config{
 		Gateway: GatewayConfig{
-			URL:     "http://localhost:7340",
+			URL:     DefaultGatewayURL,
 			Timeout: "60s",
 		},
 		Plugins: PluginsConfig{

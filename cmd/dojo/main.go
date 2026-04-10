@@ -28,10 +28,12 @@ func main() {
 		flagOneShot     = flag.String("one-shot", "", "Execute a single message and exit (non-interactive)")
 		flagCompletion  = flag.String("completion", "", "Generate shell completions (bash|zsh|fish)")
 		flagResume      = flag.Bool("resume", false, "Resume the most recent session instead of starting fresh")
+		flagJSON        = flag.Bool("json", false, "Output JSON lines in one-shot mode (for scripted pipelines)")
+		flagPlain       = flag.Bool("plain", false, "Plain text output (no ANSI colors, for piped/CI usage)")
 	)
 	flag.Parse()
 
-	if *flagNoColor {
+	if *flagNoColor || *flagPlain {
 		gcolor.Enable = false
 	}
 
@@ -85,11 +87,19 @@ func main() {
 		}
 		err = gw.ChatStream(ctx, req, func(chunk client.SSEChunk) {
 			ev := repl.ClassifyChunk(chunk)
-			if out := ev.Render(*flagNoColor); out != "" {
-				fmt.Print(out)
+			if *flagJSON {
+				if out := ev.RenderJSON(); out != "" {
+					fmt.Println(out)
+				}
+			} else {
+				if out := ev.Render(*flagPlain || *flagNoColor); out != "" {
+					fmt.Print(out)
+				}
 			}
 		})
-		fmt.Println()
+		if !*flagJSON {
+			fmt.Println()
+		}
 		if err != nil {
 			fatalf("one-shot error: %s", err)
 		}
@@ -97,7 +107,7 @@ func main() {
 	}
 
 	// Run REPL (plugin scan happens inside repl.New)
-	r := repl.New(cfg, gw, *flagResume)
+	r := repl.New(cfg, gw, *flagResume, *flagPlain || *flagNoColor)
 	if err := r.Run(ctx); err != nil {
 		fatalf("repl error: %s", err)
 	}
@@ -128,6 +138,9 @@ _dojo() {
     '/projects:project info'
     '/hooks:hook management'
     '/settings:show settings'
+    '/guide:interactive tutorials'
+    '/code:file ops and build tooling'
+    '/bloom:bonsai garden meditation'
   )
   _describe 'command' commands
 }
@@ -135,7 +148,7 @@ compdef _dojo dojo
 `)
 	case "bash":
 		fmt.Print(`_dojo_completions() {
-  COMPREPLY=($(compgen -W "/help /health /home /model /tools /agent /skill /session /run /garden /trail /trace /pilot /practice /projects /hooks /settings exit" -- "${COMP_WORDS[COMP_CWORD]}"))
+  COMPREPLY=($(compgen -W "/help /health /home /model /tools /agent /skill /session /run /garden /trail /trace /pilot /practice /projects /hooks /settings /guide /code /bloom exit" -- "${COMP_WORDS[COMP_CWORD]}"))
 }
 complete -F _dojo_completions dojo
 `)
@@ -157,6 +170,9 @@ complete -c dojo -f -a "/practice" -d "daily reflections"
 complete -c dojo -f -a "/projects" -d "project info"
 complete -c dojo -f -a "/hooks" -d "hook management"
 complete -c dojo -f -a "/settings" -d "show settings"
+complete -c dojo -f -a "/guide" -d "interactive tutorials"
+complete -c dojo -f -a "/code" -d "file ops and build tooling"
+complete -c dojo -f -a "/bloom" -d "bonsai garden meditation"
 `)
 	default:
 		fmt.Fprintf(os.Stderr, "dojo: unknown shell %q (supported: bash, zsh, fish)\n", shell)

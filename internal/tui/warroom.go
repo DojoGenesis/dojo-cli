@@ -19,14 +19,26 @@ import (
 // ─── War Room Constants ─────────────────────────────────────────────────────
 
 const (
-	scoutSuffix     = "You are a strategic scout. Explore possibilities, find routes through the problem, and synthesize options. Be thorough and measured."
+	scoutSuffix      = "You are a strategic scout. Explore possibilities, find routes through the problem, and synthesize options. Be thorough and measured."
 	challengerSuffix = "You are a professional challenger. Find the strongest objection to whatever was just proposed. Do not hedge. Lead with the objection. If you cannot find a genuine flaw, say so explicitly."
-	maxPanelLines   = 500
+	maxPanelLines    = 500
 )
 
 // ─── War Room Styles ────────────────────────────────────────────────────────
 
 var (
+	// Active panel border (amber highlight)
+	wrScoutBorderActive = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color(colorAmber)).
+				Padding(0, 1)
+
+	wrChallengerBorderActive = lipgloss.NewStyle().
+					Border(lipgloss.RoundedBorder()).
+					BorderForeground(lipgloss.Color(colorAmber)).
+					Padding(0, 1)
+
+	// Inactive panel border (dim)
 	wrScoutBorder = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color(colorInfoSteel)).
@@ -41,6 +53,11 @@ var (
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color(colorAmber)).
 			Padding(0, 1)
+
+	wrInputBorderFocused = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color(colorGreen)).
+				Padding(0, 1)
 
 	wrTitle = lipgloss.NewStyle().
 		Bold(true).
@@ -64,6 +81,9 @@ var (
 	wrStreamingDot = lipgloss.NewStyle().
 			Bold(true).
 			Foreground(lipgloss.Color(colorGreen))
+
+	wrScrollHint = lipgloss.NewStyle().
+			Foreground(lipgloss.Color(colorSubtle))
 )
 
 // ─── War Room Messages ──────────────────────────────────────────────────────
@@ -75,10 +95,12 @@ type challengerDoneMsg struct{}
 type scoutErrorMsg struct{ err error }
 type challengerErrorMsg struct{ err error }
 
+// autoDispatchMsg triggers an immediate dispatch of the pre-filled topic.
+type autoDispatchMsg struct{ text string }
+
 // ─── War Room chat request ──────────────────────────────────────────────────
 
 // warRoomChatRequest is the request body for the war room's gateway calls.
-// It extends the standard chat request with system_prompt_suffix and disposition.
 type warRoomChatRequest struct {
 	Message            string `json:"message"`
 	Model              string `json:"model,omitempty"`
@@ -95,7 +117,7 @@ type warRoomChatRequest struct {
 type focusPanel int
 
 const (
-	focusInput focusPanel = iota
+	focusInput      focusPanel = iota
 	focusScout
 	focusChallenger
 )
@@ -107,14 +129,21 @@ type WarRoomModel struct {
 	cursorPos int
 
 	// Two agent panels
-	scoutBuf      strings.Builder
-	challengerBuf strings.Builder
-	scoutLines    []string
-	challengerLines []string
-	scoutScroll      int
-	challengerScroll int
-	scoutStreaming   bool
+	scoutBuf           *strings.Builder
+	challengerBuf      *strings.Builder
+	scoutLines         []string
+	challengerLines    []string
+	scoutScroll        int
+	challengerScroll   int
+	scoutStreaming     bool
 	challengerStreaming bool
+
+	// Streaming channels — nil when no active stream.
+	// Each channel delivers tea.Msgs from one agent goroutine.
+	// The Update loop calls waitForWarRoomMsg after every chunk to keep the
+	// delivery chain alive, exactly like pilot.go's listenSSE/waitForNext pattern.
+	scoutCh      <-chan tea.Msg
+	challengerCh <-chan tea.Msg
 
 	// Focus
 	focus focusPanel
@@ -124,38 +153,55 @@ type WarRoomModel struct {
 	height int
 
 	// Gateway connection
-	gatewayURL string
+	gatewayURL   string
 	gatewayToken string
-	model      string
-	provider   string
-	sessionID  string
+	model        string
+	provider     string
+	sessionID    string
 
-	// Context
+	// Context — m.cancel() stops all activity on quit.
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	// Error
+	// Initial topic to pre-fill (and auto-dispatch on Init).
+	initialTopic string
+
+	// Error state
 	err error
 }
 
 // NewWarRoomModel constructs a WarRoomModel ready for tea.NewProgram.
-func NewWarRoomModel(gatewayURL, gatewayToken, model, provider, sessionID string) WarRoomModel {
+// If initialTopic is non-empty it is pre-filled in the input and auto-dispatched
+// immediately so the debate starts without requiring the user to press Enter.
+func NewWarRoomModel(gatewayURL, gatewayToken, model, provider, sessionID, initialTopic string) WarRoomModel {
 	ctx, cancel := context.WithCancel(context.Background())
-	return WarRoomModel{
-		inputBuf:   make([]rune, 0, 256),
-		focus:      focusInput,
-		gatewayURL: gatewayURL,
-		gatewayToken: gatewayToken,
-		model:      model,
-		provider:   provider,
-		sessionID:  sessionID,
-		ctx:        ctx,
-		cancel:     cancel,
+	m := WarRoomModel{
+		inputBuf:      make([]rune, 0, 256),
+		scoutBuf:      &strings.Builder{},
+		challengerBuf: &strings.Builder{},
+		focus:         focusInput,
+		gatewayURL:    gatewayURL,
+		gatewayToken:  gatewayToken,
+		model:         model,
+		provider:      provider,
+		sessionID:     sessionID,
+		ctx:           ctx,
+		cancel:        cancel,
+		initialTopic:  initialTopic,
 	}
+	if initialTopic != "" {
+		m.inputBuf = []rune(initialTopic)
+		m.cursorPos = len(m.inputBuf)
+	}
+	return m
 }
 
-// Init returns nil — no startup command needed until the user sends a message.
+// Init auto-dispatches the initial topic when one was provided.
 func (m WarRoomModel) Init() tea.Cmd {
+	if m.initialTopic != "" {
+		topic := m.initialTopic
+		return func() tea.Msg { return autoDispatchMsg{text: topic} }
+	}
 	return nil
 }
 
@@ -172,41 +218,46 @@ func (m WarRoomModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 
+	case autoDispatchMsg:
+		return m.dispatch(msg.text)
+
+	// ── Scout stream ──────────────────────────────────────────────────────
+
 	case scoutChunkMsg:
 		m.scoutBuf.WriteString(string(msg))
 		m.scoutLines = wrapText(m.scoutBuf.String(), m.panelContentWidth())
-		// Auto-scroll to bottom
-		vis := m.panelViewHeight()
-		if max := len(m.scoutLines) - vis; max > 0 && m.scoutScroll >= max-1 {
-			m.scoutScroll = max
-		}
-		return m, nil
-
-	case challengerChunkMsg:
-		m.challengerBuf.WriteString(string(msg))
-		m.challengerLines = wrapText(m.challengerBuf.String(), m.panelContentWidth())
-		vis := m.panelViewHeight()
-		if max := len(m.challengerLines) - vis; max > 0 && m.challengerScroll >= max-1 {
-			m.challengerScroll = max
-		}
-		return m, nil
+		m.pinScoutBottom()
+		// Keep the delivery chain alive — wait for next message on the channel.
+		return m, waitForWarRoomMsg(m.scoutCh)
 
 	case scoutDoneMsg:
 		m.scoutStreaming = false
-		return m, nil
-
-	case challengerDoneMsg:
-		m.challengerStreaming = false
+		m.scoutCh = nil
 		return m, nil
 
 	case scoutErrorMsg:
 		m.scoutStreaming = false
+		m.scoutCh = nil
 		m.scoutBuf.WriteString(fmt.Sprintf("\n[error: %v]", msg.err))
 		m.scoutLines = wrapText(m.scoutBuf.String(), m.panelContentWidth())
 		return m, nil
 
+	// ── Challenger stream ─────────────────────────────────────────────────
+
+	case challengerChunkMsg:
+		m.challengerBuf.WriteString(string(msg))
+		m.challengerLines = wrapText(m.challengerBuf.String(), m.panelContentWidth())
+		m.pinChallengerBottom()
+		return m, waitForWarRoomMsg(m.challengerCh)
+
+	case challengerDoneMsg:
+		m.challengerStreaming = false
+		m.challengerCh = nil
+		return m, nil
+
 	case challengerErrorMsg:
 		m.challengerStreaming = false
+		m.challengerCh = nil
 		m.challengerBuf.WriteString(fmt.Sprintf("\n[error: %v]", msg.err))
 		m.challengerLines = wrapText(m.challengerBuf.String(), m.panelContentWidth())
 		return m, nil
@@ -214,6 +265,74 @@ func (m WarRoomModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	return m, nil
 }
+
+// pinScoutBottom pins the scout scroll to the bottom of the content.
+func (m *WarRoomModel) pinScoutBottom() {
+	vis := m.panelViewHeight()
+	if max := len(m.scoutLines) - vis; max > 0 {
+		m.scoutScroll = max
+	} else {
+		m.scoutScroll = 0
+	}
+}
+
+// pinChallengerBottom pins the challenger scroll to the bottom of the content.
+func (m *WarRoomModel) pinChallengerBottom() {
+	vis := m.panelViewHeight()
+	if max := len(m.challengerLines) - vis; max > 0 {
+		m.challengerScroll = max
+	} else {
+		m.challengerScroll = 0
+	}
+}
+
+// dispatch clears the panels and starts both agent streams for the given text.
+// It is safe to call from Update (handleKey Enter) and from autoDispatchMsg.
+// Returns early if either stream is still active (prevents channel overlap).
+func (m WarRoomModel) dispatch(text string) (tea.Model, tea.Cmd) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return m, nil
+	}
+
+	// Don't allow a new dispatch while agents are still streaming.
+	if m.scoutStreaming || m.challengerStreaming {
+		return m, nil
+	}
+
+	// Clear input and previous responses.
+	m.inputBuf = m.inputBuf[:0]
+	m.cursorPos = 0
+	m.scoutBuf.Reset()
+	m.challengerBuf.Reset()
+	m.scoutLines = nil
+	m.challengerLines = nil
+	m.scoutScroll = 0
+	m.challengerScroll = 0
+	m.scoutStreaming = true
+	m.challengerStreaming = true
+
+	// Create fresh channels for this dispatch.
+	scoutCh := make(chan tea.Msg, 128)
+	challengerCh := make(chan tea.Msg, 128)
+	m.scoutCh = scoutCh
+	m.challengerCh = challengerCh
+
+	// Launch goroutines — they own and close the channels.
+	go streamAgentToChannel(
+		m.ctx, m.gatewayURL, m.gatewayToken, m.model, m.provider,
+		m.sessionID+"-measured", text, scoutSuffix, "measured", true, scoutCh,
+	)
+	go streamAgentToChannel(
+		m.ctx, m.gatewayURL, m.gatewayToken, m.model, m.provider,
+		m.sessionID+"-adversarial", text, challengerSuffix, "adversarial", false, challengerCh,
+	)
+
+	// Seed the delivery chains — each Cmd blocks until the next message arrives.
+	return m, tea.Batch(waitForWarRoomMsg(scoutCh), waitForWarRoomMsg(challengerCh))
+}
+
+// ─── Key Handler ────────────────────────────────────────────────────────────
 
 func (m WarRoomModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
@@ -242,7 +361,7 @@ func (m WarRoomModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case "up", "k":
+	case "up":
 		if m.focus == focusScout && m.scoutScroll > 0 {
 			m.scoutScroll--
 		} else if m.focus == focusChallenger && m.challengerScroll > 0 {
@@ -250,7 +369,18 @@ func (m WarRoomModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case "down", "j":
+	case "k":
+		if m.focus != focusInput {
+			if m.focus == focusScout && m.scoutScroll > 0 {
+				m.scoutScroll--
+			} else if m.focus == focusChallenger && m.challengerScroll > 0 {
+				m.challengerScroll--
+			}
+			return m, nil
+		}
+		return m.insertInputChar('k')
+
+	case "down":
 		if m.focus == focusScout {
 			vis := m.panelViewHeight()
 			if max := len(m.scoutLines) - vis; max > 0 && m.scoutScroll < max {
@@ -264,6 +394,102 @@ func (m WarRoomModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case "j":
+		if m.focus != focusInput {
+			vis := m.panelViewHeight()
+			if m.focus == focusScout {
+				if max := len(m.scoutLines) - vis; max > 0 && m.scoutScroll < max {
+					m.scoutScroll++
+				}
+			} else if m.focus == focusChallenger {
+				if max := len(m.challengerLines) - vis; max > 0 && m.challengerScroll < max {
+					m.challengerScroll++
+				}
+			}
+			return m, nil
+		}
+		return m.insertInputChar('j')
+
+	case "pgup", "ctrl+b":
+		vis := m.panelViewHeight()
+		step := vis - 1
+		if step < 1 {
+			step = 1
+		}
+		if m.focus == focusScout {
+			m.scoutScroll -= step
+			if m.scoutScroll < 0 {
+				m.scoutScroll = 0
+			}
+		} else if m.focus == focusChallenger {
+			m.challengerScroll -= step
+			if m.challengerScroll < 0 {
+				m.challengerScroll = 0
+			}
+		}
+		return m, nil
+
+	case "pgdown", "ctrl+f":
+		vis := m.panelViewHeight()
+		step := vis - 1
+		if step < 1 {
+			step = 1
+		}
+		if m.focus == focusScout {
+			if max := len(m.scoutLines) - vis; max > 0 {
+				m.scoutScroll += step
+				if m.scoutScroll > max {
+					m.scoutScroll = max
+				}
+			}
+		} else if m.focus == focusChallenger {
+			if max := len(m.challengerLines) - vis; max > 0 {
+				m.challengerScroll += step
+				if m.challengerScroll > max {
+					m.challengerScroll = max
+				}
+			}
+		}
+		return m, nil
+
+	case "home":
+		if m.focus == focusScout {
+			m.scoutScroll = 0
+		} else if m.focus == focusChallenger {
+			m.challengerScroll = 0
+		}
+		return m, nil
+
+	case "g":
+		if m.focus != focusInput {
+			if m.focus == focusScout {
+				m.scoutScroll = 0
+			} else if m.focus == focusChallenger {
+				m.challengerScroll = 0
+			}
+			return m, nil
+		}
+		return m.insertInputChar('g')
+
+	case "end":
+		if m.focus == focusScout {
+			m.pinScoutBottom()
+		} else if m.focus == focusChallenger {
+			m.pinChallengerBottom()
+		}
+		return m, nil
+
+	case "G":
+		if m.focus != focusInput {
+			if m.focus == focusScout {
+				m.pinScoutBottom()
+			} else if m.focus == focusChallenger {
+				m.pinChallengerBottom()
+			}
+			return m, nil
+		}
+		return m.insertInputChar('G')
+
 	case "enter":
 		if m.focus != focusInput {
 			return m, nil
@@ -276,30 +502,31 @@ func (m WarRoomModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cancel()
 			return m, tea.Quit
 		}
-		// Clear input
-		m.inputBuf = m.inputBuf[:0]
-		m.cursorPos = 0
-
-		// Clear previous responses
-		m.scoutBuf.Reset()
-		m.challengerBuf.Reset()
-		m.scoutLines = nil
-		m.challengerLines = nil
-		m.scoutScroll = 0
-		m.challengerScroll = 0
-		m.scoutStreaming = true
-		m.challengerStreaming = true
-
-		// Launch both streams
-		scoutCmd := m.streamAgent(text, scoutSuffix, "measured", true)
-		challengerCmd := m.streamAgent(text, challengerSuffix, "adversarial", false)
-
-		return m, tea.Batch(scoutCmd, challengerCmd)
+		return m.dispatch(text)
 
 	case "backspace":
 		if m.focus == focusInput && m.cursorPos > 0 {
 			m.inputBuf = append(m.inputBuf[:m.cursorPos-1], m.inputBuf[m.cursorPos:]...)
 			m.cursorPos--
+		}
+		return m, nil
+
+	case "ctrl+a":
+		if m.focus == focusInput {
+			m.cursorPos = 0
+		}
+		return m, nil
+
+	case "ctrl+e":
+		if m.focus == focusInput {
+			m.cursorPos = len(m.inputBuf)
+		}
+		return m, nil
+
+	case "ctrl+u":
+		if m.focus == focusInput {
+			m.inputBuf = m.inputBuf[:0]
+			m.cursorPos = 0
 		}
 		return m, nil
 
@@ -316,159 +543,141 @@ func (m WarRoomModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	default:
-		if m.focus == focusInput && len(key) == 1 {
-			// Insert character at cursor
-			r := []rune(key)[0]
-			tail := make([]rune, len(m.inputBuf)-m.cursorPos)
-			copy(tail, m.inputBuf[m.cursorPos:])
-			m.inputBuf = append(m.inputBuf[:m.cursorPos], r)
-			m.inputBuf = append(m.inputBuf, tail...)
-			m.cursorPos++
-		} else if m.focus == focusInput && key == "space" {
-			tail := make([]rune, len(m.inputBuf)-m.cursorPos)
-			copy(tail, m.inputBuf[m.cursorPos:])
-			m.inputBuf = append(m.inputBuf[:m.cursorPos], ' ')
-			m.inputBuf = append(m.inputBuf, tail...)
-			m.cursorPos++
+		if m.focus == focusInput {
+			if len(key) == 1 {
+				return m.insertInputChar([]rune(key)[0])
+			} else if key == "space" {
+				return m.insertInputChar(' ')
+			}
 		}
 		return m, nil
 	}
 }
 
-// ─── Stream Agent ───────────────────────────────────────────────────────────
+// insertInputChar inserts r at the current cursor position in the input buffer.
+func (m WarRoomModel) insertInputChar(r rune) (tea.Model, tea.Cmd) {
+	tail := make([]rune, len(m.inputBuf)-m.cursorPos)
+	copy(tail, m.inputBuf[m.cursorPos:])
+	m.inputBuf = append(m.inputBuf[:m.cursorPos], r)
+	m.inputBuf = append(m.inputBuf, tail...)
+	m.cursorPos++
+	return m, nil
+}
 
-func (m WarRoomModel) streamAgent(message, suffix, disposition string, isScout bool) tea.Cmd {
-	return func() tea.Msg {
-		ch := make(chan tea.Msg, 64)
+// ─── Stream Agent (channel-based) ───────────────────────────────────────────
 
-		go func() {
-			defer close(ch)
-
-			reqBody := warRoomChatRequest{
-				Message:            message,
-				Model:              m.model,
-				Provider:           m.provider,
-				Stream:             true,
-				SessionID:          m.sessionID + "-" + disposition,
-				SystemPromptSuffix: suffix,
-				Disposition:        disposition,
-			}
-
-			body, err := json.Marshal(reqBody)
-			if err != nil {
-				if isScout {
-					ch <- scoutErrorMsg{err: err}
-				} else {
-					ch <- challengerErrorMsg{err: err}
-				}
-				return
-			}
-
-			ctx, cancel := context.WithTimeout(m.ctx, 120*time.Second)
-			defer cancel()
-
-			httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, m.gatewayURL+"/v1/chat", bytes.NewReader(body))
-			if err != nil {
-				if isScout {
-					ch <- scoutErrorMsg{err: err}
-				} else {
-					ch <- challengerErrorMsg{err: err}
-				}
-				return
-			}
-			httpReq.Header.Set("Content-Type", "application/json")
-			httpReq.Header.Set("Accept", "text/event-stream")
-			if m.gatewayToken != "" {
-				httpReq.Header.Set("Authorization", "Bearer "+m.gatewayToken)
-			}
-
-			httpClient := &http.Client{}
-			resp, err := httpClient.Do(httpReq)
-			if err != nil {
-				if isScout {
-					ch <- scoutErrorMsg{err: err}
-				} else {
-					ch <- challengerErrorMsg{err: err}
-				}
-				return
-			}
-			defer resp.Body.Close()
-
-			if resp.StatusCode != http.StatusOK {
-				b, _ := io.ReadAll(resp.Body)
-				errMsg := fmt.Errorf("gateway returned %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
-				if isScout {
-					ch <- scoutErrorMsg{err: errMsg}
-				} else {
-					ch <- challengerErrorMsg{err: errMsg}
-				}
-				return
-			}
-
-			// Parse SSE
-			scanner := bufio.NewScanner(resp.Body)
-			scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-			var event string
-			for scanner.Scan() {
-				line := scanner.Text()
-				switch {
-				case strings.HasPrefix(line, "event:"):
-					event = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
-				case strings.HasPrefix(line, "data:"):
-					data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-					if data == "[DONE]" {
-						if isScout {
-							ch <- scoutDoneMsg{}
-						} else {
-							ch <- challengerDoneMsg{}
-						}
-						return
-					}
-					text := extractWarRoomText(event, data)
-					if text != "" {
-						if isScout {
-							ch <- scoutChunkMsg(text)
-						} else {
-							ch <- challengerChunkMsg(text)
-						}
-					}
-				case line == "":
-					event = ""
-				}
-			}
-			if err := scanner.Err(); err != nil {
-				if isScout {
-					ch <- scoutErrorMsg{err: err}
-				} else {
-					ch <- challengerErrorMsg{err: err}
-				}
-				return
-			}
-			if isScout {
-				ch <- scoutDoneMsg{}
-			} else {
-				ch <- challengerDoneMsg{}
-			}
-		}()
-
-		// Return first message, then set up forwarding
-		first, ok := <-ch
-		if !ok {
-			if isScout {
-				return scoutDoneMsg{}
-			}
-			return challengerDoneMsg{}
-		}
-
-		// Launch forwarder for remaining messages
-		go func() {
-			for msg := range ch {
-				_ = msg // messages are consumed through the program's send
-			}
-		}()
-
-		return first
+// waitForWarRoomMsg returns a Cmd that blocks until the next message arrives on
+// ch, then delivers it to Bubbletea. This forms the streaming delivery chain:
+// after each chunk Update calls waitForWarRoomMsg, which blocks for the next
+// chunk, which triggers another Update, and so on — exactly like pilot.go.
+func waitForWarRoomMsg(ch <-chan tea.Msg) tea.Cmd {
+	if ch == nil {
+		return nil
 	}
+	return func() tea.Msg {
+		msg, ok := <-ch
+		if !ok {
+			// Channel closed without a terminal message; treat as done.
+			// This should not happen in normal operation since streamAgentToChannel
+			// always sends done/error before closing.
+			return nil
+		}
+		return msg
+	}
+}
+
+// streamAgentToChannel runs an SSE chat stream and delivers all messages to ch.
+// It always closes ch when it exits, and always sends a done/error msg before
+// closing so waitForWarRoomMsg never blocks on a closed-and-empty channel.
+func streamAgentToChannel(
+	ctx context.Context,
+	gatewayURL, gatewayToken, model, provider, sessionID,
+	message, suffix, disposition string,
+	isScout bool,
+	ch chan<- tea.Msg,
+) {
+	defer close(ch)
+
+	sendMsg := func(scout, challenger tea.Msg) {
+		if isScout {
+			ch <- scout
+		} else {
+			ch <- challenger
+		}
+	}
+
+	reqBody := warRoomChatRequest{
+		Message:            message,
+		Model:              model,
+		Provider:           provider,
+		Stream:             true,
+		SessionID:          sessionID,
+		SystemPromptSuffix: suffix,
+		Disposition:        disposition,
+	}
+
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		sendMsg(scoutErrorMsg{err: err}, challengerErrorMsg{err: err})
+		return
+	}
+
+	reqCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	defer cancel()
+
+	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodPost,
+		gatewayURL+"/v1/chat", bytes.NewReader(body))
+	if err != nil {
+		sendMsg(scoutErrorMsg{err: err}, challengerErrorMsg{err: err})
+		return
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "text/event-stream")
+	if gatewayToken != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+gatewayToken)
+	}
+
+	resp, err := (&http.Client{}).Do(httpReq)
+	if err != nil {
+		sendMsg(scoutErrorMsg{err: err}, challengerErrorMsg{err: err})
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		e := fmt.Errorf("gateway returned %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+		sendMsg(scoutErrorMsg{err: e}, challengerErrorMsg{err: e})
+		return
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	var event string
+	for scanner.Scan() {
+		line := scanner.Text()
+		switch {
+		case strings.HasPrefix(line, "event:"):
+			event = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+		case strings.HasPrefix(line, "data:"):
+			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			if data == "[DONE]" {
+				sendMsg(scoutDoneMsg{}, challengerDoneMsg{})
+				return
+			}
+			text := extractWarRoomText(event, data)
+			if text != "" {
+				sendMsg(scoutChunkMsg(text), challengerChunkMsg(text))
+			}
+		case line == "":
+			event = ""
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		sendMsg(scoutErrorMsg{err: err}, challengerErrorMsg{err: err})
+		return
+	}
+	sendMsg(scoutDoneMsg{}, challengerDoneMsg{})
 }
 
 // extractWarRoomText pulls readable text from an SSE data field.
@@ -478,17 +687,13 @@ func extractWarRoomText(event, data string) string {
 		return ""
 	}
 
-	// Skip non-text events
 	switch event {
-	case "thinking":
-		return ""
-	case "tool_invoked", "tool_completed":
+	case "thinking", "tool_invoked", "tool_completed":
 		return ""
 	case "error":
 		return "[error: " + data + "]\n"
 	}
 
-	// Try JSON extraction
 	var m map[string]any
 	if err := json.Unmarshal([]byte(data), &m); err == nil {
 		for _, key := range []string{"text", "content", "message", "delta"} {
@@ -524,25 +729,45 @@ func (m WarRoomModel) View() string {
 	}
 
 	// ── Scout panel ──
-	scoutHeader := wrScoutLabel.Render("Scout (measured)")
+	scoutHeader := wrScoutLabel.Render("Scout")
 	if m.scoutStreaming {
 		scoutHeader += " " + wrStreamingDot.Render("\u25cf")
+	} else if len(m.scoutLines) > 0 {
+		scoutHeader += styleSubtle.Render(" (done)")
+	}
+	if m.focus == focusScout {
+		scoutHeader += wrScrollHint.Render(m.scrollHint(m.scoutLines, m.scoutScroll))
 	}
 
 	scoutContent := m.renderPanelContent(m.scoutLines, m.scoutScroll, panelWidth-4, panelHeight)
-	scoutPanel := wrScoutBorder.
+
+	scoutBorderStyle := wrScoutBorder
+	if m.focus == focusScout {
+		scoutBorderStyle = wrScoutBorderActive
+	}
+	scoutPanel := scoutBorderStyle.
 		Width(panelWidth - 2).
 		Height(panelHeight + 1).
 		Render(scoutHeader + "\n" + scoutContent)
 
 	// ── Challenger panel ──
-	challengerHeader := wrChallengerLabel.Render("Challenger (adversarial)")
+	challengerHeader := wrChallengerLabel.Render("Challenger")
 	if m.challengerStreaming {
 		challengerHeader += " " + wrStreamingDot.Render("\u25cf")
+	} else if len(m.challengerLines) > 0 {
+		challengerHeader += styleSubtle.Render(" (done)")
+	}
+	if m.focus == focusChallenger {
+		challengerHeader += wrScrollHint.Render(m.scrollHint(m.challengerLines, m.challengerScroll))
 	}
 
 	challengerContent := m.renderPanelContent(m.challengerLines, m.challengerScroll, panelWidth-4, panelHeight)
-	challengerPanel := wrChallengerBorder.
+
+	challengerBorderStyle := wrChallengerBorder
+	if m.focus == focusChallenger {
+		challengerBorderStyle = wrChallengerBorderActive
+	}
+	challengerPanel := challengerBorderStyle.
 		Width(panelWidth - 2).
 		Height(panelHeight + 1).
 		Render(challengerHeader + "\n" + challengerContent)
@@ -558,7 +783,6 @@ func (m WarRoomModel) View() string {
 	}
 	prompt := wrInputPrompt.Render("> ")
 	inputText := string(m.inputBuf)
-	// Show cursor
 	if m.focus == focusInput {
 		before := string(m.inputBuf[:m.cursorPos])
 		after := ""
@@ -568,11 +792,21 @@ func (m WarRoomModel) View() string {
 		inputText = before + "\u2588" + after
 	}
 	inputLine := prompt + inputText
-	// Truncate if too wide
 	if lipgloss.Width(inputLine) > inputWidth {
 		inputLine = inputLine[:inputWidth]
 	}
-	inputBar := wrInputBorder.Width(m.width - 4).Render(inputLine)
+	inputBarStyle := wrInputBorder
+	if m.focus == focusInput {
+		inputBarStyle = wrInputBorderFocused
+	}
+	inputBar := inputBarStyle.Width(m.width - 4).Render(inputLine)
+
+	// Streaming guard notice
+	if m.scoutStreaming || m.challengerStreaming {
+		inputBar = wrInputBorder.Width(m.width - 4).Render(
+			styleSubtle.Render("  Agents responding... press tab to scroll panels"),
+		)
+	}
 	sb.WriteString(inputBar + "\n")
 
 	// ── Status bar ──
@@ -586,7 +820,7 @@ func (m WarRoomModel) View() string {
 		focusLabel = "challenger"
 	}
 	status := wrStatusBar.Render(fmt.Sprintf(
-		"  focus: %s   [enter: send] [tab: focus] [up/down: scroll] [esc/ctrl+c: quit]",
+		"  focus: %s   [enter: send] [tab: cycle] [↑↓/pgup/pgdn: scroll] [g/G: top/bottom] [esc: quit]",
 		focusLabel,
 	))
 	sb.WriteString(status + "\n")
@@ -594,10 +828,23 @@ func (m WarRoomModel) View() string {
 	return sb.String()
 }
 
+// scrollHint returns a short "line X/Y" indicator for a panel.
+func (m WarRoomModel) scrollHint(lines []string, scroll int) string {
+	if len(lines) == 0 {
+		return ""
+	}
+	vis := m.panelViewHeight()
+	total := len(lines)
+	current := scroll + vis
+	if current > total {
+		current = total
+	}
+	return fmt.Sprintf("  %d/%d", current, total)
+}
+
 func (m WarRoomModel) renderPanelContent(lines []string, scroll, width, height int) string {
 	if len(lines) == 0 {
-		placeholder := styleSubtle.Render("Awaiting input...")
-		return placeholder
+		return styleSubtle.Render("Awaiting input...")
 	}
 
 	start := scroll
@@ -617,7 +864,6 @@ func (m WarRoomModel) renderPanelContent(lines []string, scroll, width, height i
 		if i > 0 {
 			sb.WriteString("\n")
 		}
-		// Truncate line to panel width
 		if lipgloss.Width(line) > width {
 			runes := []rune(line)
 			if len(runes) > width {
@@ -638,7 +884,6 @@ func (m WarRoomModel) renderPanelContent(lines []string, scroll, width, height i
 // ─── Layout Helpers ─────────────────────────────────────────────────────────
 
 func (m WarRoomModel) panelWidth() int {
-	// Split width in half, accounting for gap
 	w := (m.width - 1) / 2
 	if w < 20 {
 		w = 20
@@ -675,7 +920,6 @@ func wrapText(text string, maxWidth int) []string {
 		}
 		runes := []rune(raw)
 		for len(runes) > maxWidth {
-			// Try to break at a space
 			breakAt := maxWidth
 			for i := maxWidth; i > maxWidth/2; i-- {
 				if runes[i] == ' ' {
@@ -685,7 +929,6 @@ func wrapText(text string, maxWidth int) []string {
 			}
 			result = append(result, string(runes[:breakAt]))
 			runes = runes[breakAt:]
-			// Skip leading space after break
 			if len(runes) > 0 && runes[0] == ' ' {
 				runes = runes[1:]
 			}
@@ -693,7 +936,6 @@ func wrapText(text string, maxWidth int) []string {
 		result = append(result, string(runes))
 	}
 
-	// Cap total lines
 	if len(result) > maxPanelLines {
 		result = result[len(result)-maxPanelLines:]
 	}

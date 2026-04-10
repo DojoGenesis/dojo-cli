@@ -109,25 +109,28 @@ func (r *Registry) settingsCmd() Command {
 		Short:   "Show active config and settings, or manage provider keys",
 		Run: func(ctx context.Context, args []string) error {
 			if len(args) == 0 {
-				// Default: show config summary
 				fmt.Println()
 				gcolor.Bold.Print(gcolor.HEX("#e8b04a").Sprint("  Active Settings"))
 				fmt.Println()
 				fmt.Println()
 				printKV("config file", config.SettingsPath())
-				printKV("gateway.url", r.cfg.Gateway.URL)
-				printKV("gateway.timeout", r.cfg.Gateway.Timeout)
-				printKV("plugins.path", r.cfg.Plugins.Path)
 				printKV("plugins loaded", fmt.Sprintf("%d", len(r.plgs)))
-				printKV("defaults.provider", orDefault(r.cfg.Defaults.Provider, "(auto)"))
-				printKV("defaults.disposition", r.cfg.Defaults.Disposition)
-				printKV("defaults.model", orDefault(r.cfg.Defaults.Model, "(auto)"))
+				fmt.Print(r.cfg.EffectiveString())
 				fmt.Println()
 				return nil
 			}
 
 			sub := strings.ToLower(args[0])
 			switch sub {
+			case "effective":
+				fmt.Println()
+				gcolor.Bold.Print(gcolor.HEX("#e8b04a").Sprint("  Effective Configuration"))
+				fmt.Println()
+				fmt.Println(gcolor.HEX("#94a3b8").Sprint("  (file + env + flags, in priority order)"))
+				fmt.Println()
+				fmt.Print(r.cfg.EffectiveString())
+				fmt.Println()
+
 			case "providers":
 				providerSettings, err := r.gw.GetProviderSettings(ctx)
 				if err != nil {
@@ -158,7 +161,7 @@ func (r *Registry) settingsCmd() Command {
 				fmt.Println()
 
 			default:
-				return fmt.Errorf("unknown settings subcommand %q — use: providers, set", sub)
+				return fmt.Errorf("unknown settings subcommand %q — use: effective, providers, set", sub)
 			}
 			return nil
 		},

@@ -26,22 +26,16 @@ func (r *Registry) warroomCmd() Command {
 				sessionID = *r.session + "-warroom"
 			}
 
+			topic := strings.Join(args, " ")
+
 			model := tui.NewWarRoomModel(
 				r.cfg.Gateway.URL,
 				r.cfg.Gateway.Token,
 				r.cfg.Defaults.Model,
 				r.cfg.Defaults.Provider,
 				sessionID,
+				topic,
 			)
-
-			// If a topic was provided, pre-fill the input
-			if len(args) > 0 {
-				topic := strings.Join(args, " ")
-				_ = topic // Topic is entered by user in the TUI; we print it as context
-				fmt.Printf("  Topic: %s\n", topic)
-				fmt.Println("  Starting War Room... type your question and press Enter.")
-				fmt.Println()
-			}
 
 			p := tea.NewProgram(model, tea.WithAltScreen())
 			_, err := p.Run()

@@ -114,6 +114,23 @@ func ClassifyChunk(chunk client.SSEChunk) RenderEvent {
 	return RenderEvent{Type: EventText, Content: text}
 }
 
+// RenderJSON formats the event as a JSON line for scripted pipelines.
+// Each event is a single-line JSON object with type, content, and meta fields.
+func (re RenderEvent) RenderJSON() string {
+	if re.Type == EventEmpty || re.Type == EventDone {
+		return ""
+	}
+	obj := map[string]any{
+		"type":    re.Type.String(),
+		"content": re.Content,
+	}
+	if len(re.Meta) > 0 {
+		obj["meta"] = re.Meta
+	}
+	b, _ := json.Marshal(obj)
+	return string(b)
+}
+
 // Render formats the event for terminal display.
 // If plain is true, output is unstyled for piped/CI usage.
 func (re RenderEvent) Render(plain bool) string {

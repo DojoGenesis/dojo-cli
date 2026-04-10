@@ -248,6 +248,15 @@ func (c *Client) Skills(ctx context.Context) ([]Skill, error) {
 	return r.Skills, nil
 }
 
+// SearchSkills searches skills by query string, matching against name, description, and trigger fields.
+func (c *Client) SearchSkills(ctx context.Context, query string) ([]Skill, error) {
+	var r skillsEnvelope
+	if err := c.get(ctx, "/api/skills?q="+query, &r); err != nil {
+		return nil, err
+	}
+	return r.Skills, nil
+}
+
 // ─── Seeds / Garden ──────────────────────────────────────────────────────────
 
 // Seed is a single entry in the /v1/seeds response.
@@ -1058,10 +1067,30 @@ func (c *Client) CASPutContent(ctx context.Context, content []byte) (string, err
 	var r struct {
 		Ref string `json:"ref"`
 	}
-	if err := c.post(ctx, "/api/cas/content", json.RawMessage(content), &r); err != nil {
+	body := struct {
+		Content []byte `json:"content"`
+	}{Content: content}
+	if err := c.post(ctx, "/api/cas/content", body, &r); err != nil {
 		return "", err
 	}
 	return r.Ref, nil
+}
+
+// CASCreateTag creates or updates a CAS tag linking a name+version to a content ref.
+func (c *Client) CASCreateTag(ctx context.Context, name, version, ref string) error {
+	body := map[string]string{
+		"name":    name,
+		"version": version,
+		"ref":     ref,
+	}
+	var r struct{} // gateway returns 201 with empty body or tag echo
+	err := c.post(ctx, "/api/cas/tags", body, &r)
+	// post() decodes JSON into r — if body is empty, the decode will fail
+	// with io.EOF. That's OK for 201 Created with no body.
+	if err != nil && !strings.Contains(err.Error(), "EOF") {
+		return err
+	}
+	return nil
 }
 
 // ─── Documents ──────────────────────────────────────────────────────────────
