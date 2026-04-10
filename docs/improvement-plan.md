@@ -36,9 +36,9 @@ These should be removed from TODO.md as they're already done:
 
 ---
 
-## Phase 1: Structural Consolidation (parallel tracks)
+## Phase 1: Structural Consolidation (parallel tracks) — COMPLETE
 
-### Track A — Command File Split
+### Track A — Command File Split [DONE]
 **Priority:** P1
 **Files:** `internal/commands/` (modify commands.go, create new files)
 **Goal:** Break 2,026-line commands.go into feature-slice files
@@ -64,7 +64,7 @@ Rules:
 - No behavioral changes — pure file split
 - All existing tests must pass unchanged
 
-### Track B — Typed Streaming Event Renderer
+### Track B — Typed Streaming Event Renderer [DONE]
 **Priority:** P2
 **Files:** `internal/repl/renderer.go` (new), modify `internal/repl/repl.go`
 **Goal:** Replace thin `extractText()` with a typed renderer layer
@@ -97,7 +97,7 @@ func (re RenderEvent) Render(plain bool) string
 - `repl.chat()` calls `ClassifyChunk` → `Render` instead of `extractText` directly
 - Agent streaming (`/agent chat`, `/agent dispatch`) also uses the same renderer
 
-### Track C — Config Validation
+### Track C — Config Validation [DONE]
 **Priority:** P2
 **Files:** `internal/config/config.go`, `internal/config/config_test.go`
 **Goal:** Validate config at load time, add effective-config inspection
@@ -146,7 +146,7 @@ Target:
 - `/session resume` → switch to last session mid-conversation
 - Clear indicator in prompt when resumed vs fresh
 
-### Track G — Color Library Unification
+### Track G — Color Library Unification [DONE]
 **Depends on:** All Phase 1 tracks
 **Goal:** Drop `fatih/color`, use `gookit/color` everywhere
 

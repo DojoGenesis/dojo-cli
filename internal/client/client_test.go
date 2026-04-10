@@ -317,3 +317,716 @@ func TestNew_BadTimeout_Defaults(t *testing.T) {
 		t.Errorf("expected default 60s timeout, got %v", c.http.Timeout)
 	}
 }
+
+// ─── Auth header injection ────────────────────────────────────────────────────
+
+func TestAuthHeader_GetRequest(t *testing.T) {
+	const wantToken = "test-bearer-token"
+	var gotAuth string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(HealthResponse{Status: "ok"})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, wantToken, "5s")
+	_, err := c.Health(context.Background())
+	if err != nil {
+		t.Fatalf("Health() error: %v", err)
+	}
+	want := "Bearer " + wantToken
+	if gotAuth != want {
+		t.Errorf("Authorization header: got %q, want %q", gotAuth, want)
+	}
+}
+
+func TestAuthHeader_PostRequest(t *testing.T) {
+	const wantToken = "post-token"
+	var gotAuth string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"memory": Memory{ID: "m1", Content: "c"}})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, wantToken, "5s")
+	_, err := c.StoreMemory(context.Background(), StoreMemoryRequest{Content: "hello"})
+	if err != nil {
+		t.Fatalf("StoreMemory() error: %v", err)
+	}
+	want := "Bearer " + wantToken
+	if gotAuth != want {
+		t.Errorf("Authorization header: got %q, want %q", gotAuth, want)
+	}
+}
+
+func TestAuthHeader_NoTokenOmitted(t *testing.T) {
+	var gotAuth string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(HealthResponse{Status: "ok"})
+	}))
+	defer srv.Close()
+
+	// Empty token — header must be absent.
+	c := New(srv.URL, "", "5s")
+	_, err := c.Health(context.Background())
+	if err != nil {
+		t.Fatalf("Health() error: %v", err)
+	}
+	if gotAuth != "" {
+		t.Errorf("expected no Authorization header, got %q", gotAuth)
+	}
+}
+
+func TestAuthHeader_ChatStream(t *testing.T) {
+	const wantToken = "stream-token"
+	var gotAuth string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		// write a minimal SSE stream
+		_, _ = w.Write([]byte("data: hello\ndata: [DONE]\n"))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, wantToken, "5s")
+	err := c.ChatStream(context.Background(), ChatRequest{Message: "hi"}, func(SSEChunk) {})
+	if err != nil {
+		t.Fatalf("ChatStream() error: %v", err)
+	}
+	want := "Bearer " + wantToken
+	if gotAuth != want {
+		t.Errorf("Authorization header on ChatStream: got %q, want %q", gotAuth, want)
+	}
+}
+
+// ─── Error response handling ─────────────────────────────────────────────────
+
+func TestGet_404_ReturnsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "", "5s")
+	_, err := c.Health(context.Background())
+	if err == nil {
+		t.Fatal("expected error for 404, got nil")
+	}
+	if !strings.Contains(err.Error(), "404") {
+		t.Errorf("expected error to mention 404, got: %v", err)
+	}
+}
+
+func TestGet_500_ReturnsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "", "5s")
+	_, err := c.Providers(context.Background())
+	if err == nil {
+		t.Fatal("expected error for 500, got nil")
+	}
+	if !strings.Contains(err.Error(), "500") {
+		t.Errorf("expected error to mention 500, got: %v", err)
+	}
+}
+
+func TestPost_400_ReturnsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "bad request", http.StatusBadRequest)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "", "5s")
+	_, err := c.CreateSeed(context.Background(), CreateSeedRequest{Name: "x", Content: "y"})
+	if err == nil {
+		t.Fatal("expected error for 400, got nil")
+	}
+	if !strings.Contains(err.Error(), "400") {
+		t.Errorf("expected error to mention 400, got: %v", err)
+	}
+}
+
+func TestPost_422_ErrorBodyIncluded(t *testing.T) {
+	const body = "validation failed: name required"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, body, http.StatusUnprocessableEntity)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "", "5s")
+	_, err := c.StoreMemory(context.Background(), StoreMemoryRequest{Content: "test"})
+	if err == nil {
+		t.Fatal("expected error for 422, got nil")
+	}
+	if !strings.Contains(err.Error(), "422") {
+		t.Errorf("expected 422 in error, got: %v", err)
+	}
+}
+
+func TestChatStream_4xx_ReturnsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "", "5s")
+	err := c.ChatStream(context.Background(), ChatRequest{Message: "hi"}, func(SSEChunk) {})
+	if err == nil {
+		t.Fatal("expected error for 401, got nil")
+	}
+	if !strings.Contains(err.Error(), "401") {
+		t.Errorf("expected 401 in error, got: %v", err)
+	}
+}
+
+func TestAgentChatStream_5xx_ReturnsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "", "5s")
+	err := c.AgentChatStream(context.Background(), "agent-xyz", AgentChatRequest{Message: "hello"}, func(SSEChunk) {})
+	if err == nil {
+		t.Fatal("expected error for 503, got nil")
+	}
+	if !strings.Contains(err.Error(), "503") {
+		t.Errorf("expected 503 in error, got: %v", err)
+	}
+}
+
+// ─── SSE stream parsing via ChatStream / AgentChatStream ─────────────────────
+
+func TestChatStream_ParsesSSEChunks(t *testing.T) {
+	// Server emits three data lines then [DONE].
+	sseBody := "data: chunk1\ndata: chunk2\ndata: chunk3\ndata: [DONE]\n"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(sseBody))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "", "5s")
+	var got []string
+	err := c.ChatStream(context.Background(), ChatRequest{Message: "test"}, func(chunk SSEChunk) {
+		got = append(got, chunk.Data)
+	})
+	if err != nil {
+		t.Fatalf("ChatStream() error: %v", err)
+	}
+	want := []string{"chunk1", "chunk2", "chunk3"}
+	if len(got) != len(want) {
+		t.Fatalf("expected %d chunks, got %d: %v", len(want), len(got), got)
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("chunk[%d]: got %q, want %q", i, got[i], w)
+		}
+	}
+}
+
+func TestChatStream_ParsesJSONChunks(t *testing.T) {
+	// Server emits JSON-wrapped OpenAI delta chunks followed by [DONE].
+	chunk1 := `{"choices":[{"delta":{"content":"Hello"}}]}`
+	chunk2 := `{"choices":[{"delta":{"content":" world"}}]}`
+	sseBody := "data: " + chunk1 + "\ndata: " + chunk2 + "\ndata: [DONE]\n"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(sseBody))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "", "5s")
+	var combined string
+	err := c.ChatStream(context.Background(), ChatRequest{Message: "hi"}, func(chunk SSEChunk) {
+		combined += extractTextLocal(chunk.Data)
+	})
+	if err != nil {
+		t.Fatalf("ChatStream() error: %v", err)
+	}
+	if combined != "Hello world" {
+		t.Errorf("expected 'Hello world', got %q", combined)
+	}
+}
+
+func TestChatStream_StopsAtDone(t *testing.T) {
+	// Data after [DONE] must not be delivered to onChunk.
+	sseBody := "data: before\ndata: [DONE]\ndata: after\n"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(sseBody))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "", "5s")
+	var got []string
+	if err := c.ChatStream(context.Background(), ChatRequest{Message: "x"}, func(chunk SSEChunk) {
+		got = append(got, chunk.Data)
+	}); err != nil {
+		t.Fatalf("ChatStream() error: %v", err)
+	}
+	if len(got) != 1 || got[0] != "before" {
+		t.Errorf("expected only [before], got %v", got)
+	}
+}
+
+func TestAgentChatStream_ParsesSSEChunks(t *testing.T) {
+	sseBody := "data: reply1\ndata: reply2\ndata: [DONE]\n"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify routing — path must contain the agent ID.
+		if !strings.Contains(r.URL.Path, "agent-abc") {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(sseBody))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "", "5s")
+	var got []string
+	err := c.AgentChatStream(context.Background(), "agent-abc", AgentChatRequest{Message: "hello"}, func(chunk SSEChunk) {
+		got = append(got, chunk.Data)
+	})
+	if err != nil {
+		t.Fatalf("AgentChatStream() error: %v", err)
+	}
+	want := []string{"reply1", "reply2"}
+	if len(got) != len(want) {
+		t.Fatalf("expected %d chunks, got %d: %v", len(want), len(got), got)
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("chunk[%d]: got %q, want %q", i, got[i], w)
+		}
+	}
+}
+
+func TestAgentChatStream_AuthHeader(t *testing.T) {
+	const wantToken = "agent-token"
+	var gotAuth string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: [DONE]\n"))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, wantToken, "5s")
+	if err := c.AgentChatStream(context.Background(), "a1", AgentChatRequest{Message: "x"}, func(SSEChunk) {}); err != nil {
+		t.Fatalf("AgentChatStream() error: %v", err)
+	}
+	want := "Bearer " + wantToken
+	if gotAuth != want {
+		t.Errorf("Authorization: got %q, want %q", gotAuth, want)
+	}
+}
+
+// ─── Additional GET endpoints — error path ───────────────────────────────────
+
+func TestModels_500_ReturnsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "upstream timeout", http.StatusGatewayTimeout)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "", "5s")
+	_, err := c.Models(context.Background())
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "504") {
+		t.Errorf("expected 504 in error, got: %v", err)
+	}
+}
+
+func TestModels_Success(t *testing.T) {
+	resp := modelsEnvelope{
+		Models: []Model{{ID: "claude-3", Provider: "anthropic", Name: "Claude 3"}},
+		Count:  1,
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "", "5s")
+	models, err := c.Models(context.Background())
+	if err != nil {
+		t.Fatalf("Models() error: %v", err)
+	}
+	if len(models) != 1 || models[0].ID != "claude-3" {
+		t.Errorf("unexpected models: %v", models)
+	}
+}
+
+func TestProviders_Success(t *testing.T) {
+	resp := providersEnvelope{
+		Providers: []Provider{{Name: "anthropic", Status: "healthy"}},
+		Count:     1,
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "", "5s")
+	providers, err := c.Providers(context.Background())
+	if err != nil {
+		t.Fatalf("Providers() error: %v", err)
+	}
+	if len(providers) != 1 || providers[0].Name != "anthropic" {
+		t.Errorf("unexpected providers: %v", providers)
+	}
+}
+
+func TestMemories_Success(t *testing.T) {
+	resp := memoriesResponse{
+		Memories: []Memory{{ID: "m1", Content: "remember this", Type: "fact"}},
+		Total:    1,
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/memory" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "", "5s")
+	mems, err := c.Memories(context.Background())
+	if err != nil {
+		t.Fatalf("Memories() error: %v", err)
+	}
+	if len(mems) != 1 || mems[0].ID != "m1" {
+		t.Errorf("unexpected memories: %v", mems)
+	}
+}
+
+func TestGardenStats_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"total_seeds": 42})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "", "5s")
+	stats, err := c.GardenStats(context.Background())
+	if err != nil {
+		t.Fatalf("GardenStats() error: %v", err)
+	}
+	if v, ok := stats["total_seeds"].(float64); !ok || int(v) != 42 {
+		t.Errorf("unexpected stats: %v", stats)
+	}
+}
+
+func TestDeleteSeed_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			http.Error(w, "wrong method", http.StatusMethodNotAllowed)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "", "5s")
+	if err := c.DeleteSeed(context.Background(), "seed-1"); err != nil {
+		t.Fatalf("DeleteSeed() error: %v", err)
+	}
+}
+
+func TestDeleteSeed_404_ReturnsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "", "5s")
+	err := c.DeleteSeed(context.Background(), "missing-seed")
+	if err == nil {
+		t.Fatal("expected error for 404, got nil")
+	}
+}
+
+func TestCreateAgent_Success(t *testing.T) {
+	want := CreateAgentResponse{AgentID: "agent-1", Status: "ready"}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "wrong method", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(want)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "", "5s")
+	got, err := c.CreateAgent(context.Background(), CreateAgentRequest{WorkspaceRoot: "/tmp"})
+	if err != nil {
+		t.Fatalf("CreateAgent() error: %v", err)
+	}
+	if got.AgentID != want.AgentID {
+		t.Errorf("AgentID: got %q, want %q", got.AgentID, want.AgentID)
+	}
+}
+
+// ─── Agents endpoint ─────────────────────────────────────────────────────────
+
+func TestAgents_Success(t *testing.T) {
+	resp := agentsEnvelope{
+		Agents: []Agent{{AgentID: "a1", Status: "running"}, {AgentID: "a2", Status: "idle"}},
+		Total:  2,
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "", "5s")
+	agents, err := c.Agents(context.Background())
+	if err != nil {
+		t.Fatalf("Agents() error: %v", err)
+	}
+	if len(agents) != 2 {
+		t.Fatalf("expected 2 agents, got %d", len(agents))
+	}
+	if agents[0].AgentID != "a1" {
+		t.Errorf("AgentID: got %q, want %q", agents[0].AgentID, "a1")
+	}
+}
+
+func TestAgents_500_ReturnsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "err", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "", "5s")
+	_, err := c.Agents(context.Background())
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+// ─── Skills / SkillsAll ──────────────────────────────────────────────────────
+
+func TestSkillsAll_SinglePage(t *testing.T) {
+	resp := skillsEnvelope{
+		Skills: []Skill{{ID: "s1", Name: "skill-one"}, {ID: "s2", Name: "skill-two"}},
+		Total:  2,
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "", "5s")
+	skills, err := c.Skills(context.Background())
+	if err != nil {
+		t.Fatalf("Skills() error: %v", err)
+	}
+	if len(skills) != 2 {
+		t.Fatalf("expected 2 skills, got %d", len(skills))
+	}
+	if skills[0].ID != "s1" {
+		t.Errorf("ID: got %q, want %q", skills[0].ID, "s1")
+	}
+}
+
+func TestSkillsAll_EmptyPage_StopsLoop(t *testing.T) {
+	// Server returns empty skills list — loop should stop after first page.
+	resp := skillsEnvelope{Skills: nil, Total: 0}
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "", "5s")
+	skills, err := c.Skills(context.Background())
+	if err != nil {
+		t.Fatalf("Skills() error: %v", err)
+	}
+	if len(skills) != 0 {
+		t.Errorf("expected 0 skills, got %d", len(skills))
+	}
+	if calls != 1 {
+		t.Errorf("expected exactly 1 request, got %d", calls)
+	}
+}
+
+func TestSkills_500_ReturnsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "err", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "", "5s")
+	_, err := c.Skills(context.Background())
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+// ─── put helper — covered via UpdateMemory ───────────────────────────────────
+
+func TestUpdateMemory_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			http.Error(w, "wrong method", http.StatusMethodNotAllowed)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "", "5s")
+	if err := c.UpdateMemory(context.Background(), "m1", UpdateMemoryRequest{Content: "updated"}); err != nil {
+		t.Fatalf("UpdateMemory() error: %v", err)
+	}
+}
+
+func TestUpdateMemory_NoContent_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "", "5s")
+	if err := c.UpdateMemory(context.Background(), "m2", UpdateMemoryRequest{Content: "x"}); err != nil {
+		t.Fatalf("UpdateMemory() error: %v", err)
+	}
+}
+
+func TestUpdateMemory_500_ReturnsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "err", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "", "5s")
+	err := c.UpdateMemory(context.Background(), "m1", UpdateMemoryRequest{Content: "x"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+// ─── PilotStream ─────────────────────────────────────────────────────────────
+
+func TestPilotStream_ParsesSSEChunks(t *testing.T) {
+	sseBody := "data: pilot1\ndata: pilot2\ndata: [DONE]\n"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.RawQuery, "client_id") {
+			http.Error(w, "missing client_id", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(sseBody))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "", "5s")
+	var got []string
+	err := c.PilotStream(context.Background(), "client-123", func(chunk SSEChunk) {
+		got = append(got, chunk.Data)
+	})
+	if err != nil {
+		t.Fatalf("PilotStream() error: %v", err)
+	}
+	if len(got) != 2 || got[0] != "pilot1" || got[1] != "pilot2" {
+		t.Errorf("unexpected chunks: %v", got)
+	}
+}
+
+func TestPilotStream_4xx_ReturnsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "", "5s")
+	err := c.PilotStream(context.Background(), "cid", func(SSEChunk) {})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "403") {
+		t.Errorf("expected 403 in error, got: %v", err)
+	}
+}
+
+// ─── WorkflowExecutionStream ─────────────────────────────────────────────────
+
+func TestWorkflowExecutionStream_ParsesSSEChunks(t *testing.T) {
+	sseBody := "data: wf-event-1\ndata: [DONE]\n"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "run-xyz") {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(sseBody))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "", "5s")
+	var got []string
+	err := c.WorkflowExecutionStream(context.Background(), "run-xyz", func(chunk SSEChunk) {
+		got = append(got, chunk.Data)
+	})
+	if err != nil {
+		t.Fatalf("WorkflowExecutionStream() error: %v", err)
+	}
+	if len(got) != 1 || got[0] != "wf-event-1" {
+		t.Errorf("unexpected chunks: %v", got)
+	}
+}
+
+func TestWorkflowExecutionStream_5xx_ReturnsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "err", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "", "5s")
+	err := c.WorkflowExecutionStream(context.Background(), "run-1", func(SSEChunk) {})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}

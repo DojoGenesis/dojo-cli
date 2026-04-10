@@ -4,11 +4,6 @@ VERSION  := $(shell git describe --tags --always --dirty 2>/dev/null || echo "de
 LDFLAGS  := -s -w -X main.version=$(VERSION)
 GOFLAGS  := -trimpath
 
-# NOTE: cmd/dojo/main.go declares `const version = "0.1.0"`.
-# Go's -X ldflags only patches `var` symbols, not `const`.
-# A separate agent is responsible for changing `const version` to `var version`.
-# Until that change lands, the VERSION override via -ldflags will have no effect
-# and the binary will always report "0.1.0".
 
 .PHONY: build install test vet clean fmt lint
 

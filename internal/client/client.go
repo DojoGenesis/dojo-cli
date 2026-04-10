@@ -239,22 +239,53 @@ type skillsEnvelope struct {
 	Offset int     `json:"offset"`
 }
 
-// Skills fetches GET /api/skills.
+// Skills fetches all skills from the gateway, paginating automatically.
+// The server caps responses at 50 by default; this exhausts all pages.
 func (c *Client) Skills(ctx context.Context) ([]Skill, error) {
-	var r skillsEnvelope
-	if err := c.get(ctx, "/api/skills", &r); err != nil {
-		return nil, err
+	return c.SkillsAll(ctx)
+}
+
+// SkillsAll fetches every skill by walking server-side pages.
+// It requests 100 per page and stops when all skills are collected.
+func (c *Client) SkillsAll(ctx context.Context) ([]Skill, error) {
+	const pageSize = 100
+	var all []Skill
+	offset := 0
+	for {
+		var r skillsEnvelope
+		path := fmt.Sprintf("/api/skills?limit=%d&offset=%d", pageSize, offset)
+		if err := c.get(ctx, path, &r); err != nil {
+			return nil, err
+		}
+		all = append(all, r.Skills...)
+		// Stop when we've collected everything or the server returned an empty page.
+		if len(r.Skills) == 0 || (r.Total > 0 && len(all) >= r.Total) {
+			break
+		}
+		offset += len(r.Skills)
 	}
-	return r.Skills, nil
+	return all, nil
 }
 
 // SearchSkills searches skills by query string, matching against name, description, and trigger fields.
+// Paginates automatically in case the server returns partial results.
 func (c *Client) SearchSkills(ctx context.Context, query string) ([]Skill, error) {
-	var r skillsEnvelope
-	if err := c.get(ctx, "/api/skills?q="+query, &r); err != nil {
-		return nil, err
+	const pageSize = 100
+	var all []Skill
+	offset := 0
+	for {
+		var r skillsEnvelope
+		path := fmt.Sprintf("/api/skills?q=%s&limit=%d&offset=%d", url.QueryEscape(query), pageSize, offset)
+		if err := c.get(ctx, path, &r); err != nil {
+			return nil, err
+		}
+		all = append(all, r.Skills...)
+		if len(r.Skills) == 0 || (r.Total > 0 && len(all) >= r.Total) {
+			break
+		}
+		offset += len(r.Skills)
 	}
-	return r.Skills, nil
+	return all, nil
 }
 
 // ─── Seeds / Garden ──────────────────────────────────────────────────────────
@@ -305,13 +336,14 @@ func (c *Client) GardenStats(ctx context.Context) (map[string]any, error) {
 // ChatRequest mirrors the /v1/chat request body.
 // Server: server/handlers/chat.go → ChatRequest
 type ChatRequest struct {
-	Message   string `json:"message"`
-	Model     string `json:"model,omitempty"`
-	Provider  string `json:"provider,omitempty"`
-	Stream    bool   `json:"stream"`
-	SessionID string `json:"session_id"`
-	UserID    string `json:"user_id,omitempty"`
-	ProjectID string `json:"project_id,omitempty"`
+	Message       string `json:"message"`
+	Model         string `json:"model,omitempty"`
+	Provider      string `json:"provider,omitempty"`
+	Stream        bool   `json:"stream"`
+	SessionID     string `json:"session_id"`
+	UserID        string `json:"user_id,omitempty"`
+	ProjectID     string `json:"project_id,omitempty"`
+	WorkspaceRoot string `json:"workspace_root,omitempty"` // User's CWD for file tool path resolution
 }
 
 // SSEChunk is a parsed line from the SSE stream.

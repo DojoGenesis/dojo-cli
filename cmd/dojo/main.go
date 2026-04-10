@@ -79,11 +79,13 @@ func main() {
 
 	// One-shot mode: send a single message and exit
 	if *flagOneShot != "" {
+		workspaceRoot, _ := os.Getwd()
 		req := client.ChatRequest{
-			Message:   *flagOneShot,
-			Model:     cfg.Defaults.Model,
-			SessionID: fmt.Sprintf("dojo-oneshot-%d", time.Now().UnixNano()),
-			Stream:    true,
+			Message:       *flagOneShot,
+			Model:         cfg.Defaults.Model,
+			SessionID:     fmt.Sprintf("dojo-oneshot-%d", time.Now().UnixNano()),
+			Stream:        true,
+			WorkspaceRoot: workspaceRoot,
 		}
 		err = gw.ChatStream(ctx, req, func(chunk client.SSEChunk) {
 			ev := repl.ClassifyChunk(chunk)

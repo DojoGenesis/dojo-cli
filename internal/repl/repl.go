@@ -451,13 +451,15 @@ func (r *REPL) handle(ctx context.Context, line string) error {
 
 // chat sends a freeform message to the gateway and streams the response.
 func (r *REPL) chat(ctx context.Context, message string) error {
+	workspaceRoot, _ := os.Getwd()
 	req := client.ChatRequest{
-		Message:   message,
-		Model:     r.cfg.Defaults.Model,
-		Provider:  r.cfg.Defaults.Provider,
-		SessionID: r.session,
-		UserID:    r.cfg.Auth.UserID,
-		Stream:    true,
+		Message:       message,
+		Model:         r.cfg.Defaults.Model,
+		Provider:      r.cfg.Defaults.Provider,
+		SessionID:     r.session,
+		UserID:        r.cfg.Auth.UserID,
+		Stream:        true,
+		WorkspaceRoot: workspaceRoot,
 	}
 
 	fmt.Println()

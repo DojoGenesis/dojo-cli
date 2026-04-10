@@ -88,10 +88,12 @@ All items completed:
 
 ## Phase 3 (remaining)
 
-- [ ] `~/.dojo/plugins/` auto-install from CoworkPlugins git URL
-- [ ] Disposition presets as named profiles in `settings.json`
-- [ ] `Auth.UserID` in config for non-guest identity
-- [ ] DAG construction from natural language (client-side plan building, vs current MVP of gateway-side routing)
+| # | Item | Priority | Effort | Acceptance Criteria |
+|---|------|----------|--------|---------------------|
+| 3.1 | `~/.dojo/plugins/` auto-install from CoworkPlugins git URL | P1 | 2-3h | `dojo plugins install <url>` clones CoworkPlugins repo into `~/.dojo/plugins/`, scans for `plugin.json`, registers hooks; `go test ./internal/plugins/... -cover` ≥ 60% |
+| 3.2 | Disposition presets as named profiles in `settings.json` | P1 | 2-3h | `settings.json` supports `"disposition_profiles": {"<name>": {...}}` and `"active_profile": "<name>"`; `/settings profile set <name>` switches active; config loads merged disposition from named profile |
+| 3.3 | `Auth.UserID` in config for non-guest identity | P2 | 1-2h | `~/.dojo/config.yaml` accepts `auth.user_id`; `ChatRequest.UserID` populated when set; `DOJO_USER_ID` env override; gateway receives non-empty UserID for authenticated sessions |
+| 3.4 | DAG construction from natural language | P3 | 4-6h | `/run <task> --dag` builds an `ExecutionPlan` client-side via NL parsing before sending to gateway; `OrchestrationDAG()` used for plan submission; live DAG node status displayed via SSE polling |
 
 **Done (removed from Phase 3):**
 - `dojo --one-shot "task"` flag -- implemented in `cmd/dojo/main.go` lines 79-108

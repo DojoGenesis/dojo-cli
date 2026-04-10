@@ -75,6 +75,44 @@ func init() {
 	}
 }
 
+// InferProvider returns the provider ID for a given model ID.
+// It first checks the static Catalog for an exact model ID match, then
+// falls back to common model name prefix matching. Returns "" if unrecognised.
+func InferProvider(model string) string {
+	lower := strings.ToLower(model)
+
+	// Exact match in catalog
+	for _, p := range Catalog {
+		for _, m := range p.Models {
+			if strings.ToLower(m.ID) == lower {
+				return p.ID
+			}
+		}
+	}
+
+	// Prefix-based inference (mirrors gateway selectProviderWithRouting)
+	prefixes := []struct{ prefix, provider string }{
+		{"claude-", "anthropic"},
+		{"gpt-", "openai"},
+		{"o1-", "openai"},
+		{"o3", "openai"},
+		{"o4-", "openai"},
+		{"chatgpt-", "openai"},
+		{"gemini-", "google"},
+		{"moonshot-", "kimi"},
+		{"kimi-", "kimi"},
+		{"llama-", "local"},
+		{"mistral-", "local"},
+	}
+	for _, p := range prefixes {
+		if strings.HasPrefix(lower, p.prefix) {
+			return p.provider
+		}
+	}
+
+	return ""
+}
+
 // APIKeys holds API keys discovered from environment variables.
 type APIKeys struct {
 	AnthropicKey string // ANTHROPIC_API_KEY

@@ -14,6 +14,7 @@ import (
 	"github.com/DojoGenesis/dojo-cli/internal/art"
 	"github.com/DojoGenesis/dojo-cli/internal/client"
 	"github.com/DojoGenesis/dojo-cli/internal/config"
+	"github.com/DojoGenesis/dojo-cli/internal/providers"
 )
 
 // ─── Styles (home-specific) ──────────────────────────────────────────────────
@@ -204,7 +205,13 @@ func (m HomeModel) View() string {
 		model = "(gateway default)"
 	}
 	provider := m.cfg.Defaults.Provider
-	if provider == "" {
+	if provider == "" && model != "(gateway default)" {
+		if inferred := providers.InferProvider(model); inferred != "" {
+			provider = inferred
+		} else {
+			provider = "(gateway default)"
+		}
+	} else if provider == "" {
 		provider = "(gateway default)"
 	}
 	inner.WriteString(row("Model", model, styleValue))

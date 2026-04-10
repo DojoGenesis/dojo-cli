@@ -116,12 +116,18 @@ func (r *Registry) modelSet(ctx context.Context, args []string) error {
 	r.cfg.Defaults.Model = newModel
 	if newProvider != "" {
 		r.cfg.Defaults.Provider = newProvider
+	} else {
+		// Auto-infer provider from model name when not explicitly given
+		if inferred := providers.InferProvider(newModel); inferred != "" {
+			r.cfg.Defaults.Provider = inferred
+			newProvider = inferred // used for display and key sync below
+		}
 	}
 	_ = r.cfg.Save() // persist model/provider to disk
 
 	activity.Log(activity.ModelChanged, fmt.Sprintf("model → %s", newModel))
 
-	// If a provider was specified, push its API key to the gateway so it gets
+	// If a provider was specified (or inferred), push its API key to the gateway so it gets
 	// registered immediately rather than waiting for the next restart.
 	if newProvider != "" {
 		keys := providers.LoadAPIKeys()

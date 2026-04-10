@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,6 +18,7 @@ import (
 	"github.com/DojoGenesis/dojo-cli/internal/art"
 	"github.com/DojoGenesis/dojo-cli/internal/client"
 	"github.com/DojoGenesis/dojo-cli/internal/orchestration"
+	"github.com/DojoGenesis/dojo-cli/internal/skills"
 	"github.com/DojoGenesis/dojo-cli/internal/tui"
 	gcolor "github.com/gookit/color"
 )
@@ -159,12 +162,14 @@ func (r *Registry) runCmd() Command {
 			}
 
 			// Fallback: ChatStream MVP.
+			workspaceRoot, _ := os.Getwd()
 			req := client.ChatRequest{
-				Message:   task,
-				Model:     r.cfg.Defaults.Model,
-				Provider:  r.cfg.Defaults.Provider,
-				SessionID: *r.session,
-				Stream:    true,
+				Message:       task,
+				Model:         r.cfg.Defaults.Model,
+				Provider:      r.cfg.Defaults.Provider,
+				SessionID:     *r.session,
+				Stream:        true,
+				WorkspaceRoot: workspaceRoot,
 			}
 
 			fmt.Println()
@@ -174,7 +179,18 @@ func (r *Registry) runCmd() Command {
 			gcolor.Bold.Print(gcolor.HEX("#e8b04a").Sprint("  dojo  "))
 
 			var fullText strings.Builder
+			var streamErrMsg string
 			err := r.gw.ChatStream(ctx, req, func(chunk client.SSEChunk) {
+				// Capture gateway error events (e.g. rate limit, agent failure)
+				if chunk.Event == "error" {
+					var m map[string]any
+					if json.Unmarshal([]byte(chunk.Data), &m) == nil {
+						if e, ok := m["error"].(string); ok && e != "" {
+							streamErrMsg = e
+						}
+					}
+					return
+				}
 				if text := agentExtractText(chunk.Data); text != "" {
 					fmt.Print(text)
 					fullText.WriteString(text)
@@ -183,6 +199,15 @@ func (r *Registry) runCmd() Command {
 
 			fmt.Println()
 			fmt.Println()
+
+			if streamErrMsg != "" {
+				fmt.Println(gcolor.HEX("#ef4444").Sprintf("  [agent error: %s]", truncate(streamErrMsg, 120)))
+				fmt.Println()
+			} else if fullText.Len() == 0 && err == nil {
+				fmt.Println(gcolor.HEX("#94a3b8").Sprint("  [no response — the agent may have hit a rate limit or internal error]"))
+				fmt.Println()
+			}
+
 			return err
 		},
 	}
@@ -572,81 +597,275 @@ func (r *Registry) skillCmd() Command {
 				fmt.Println()
 				return nil
 
-			default: // ls (sub may be "ls" or a filter term)
-				// args[0] may be "ls" or a filter term
-				filter := ""
-				for _, a := range args {
-					if a != "ls" {
-						filter = strings.ToLower(a)
-					}
-				}
+			default: // ls / all / filter — main skill browser
+				filter, showAll, page := parseSkillLsArgs(args)
 
-				skills, err := r.gw.Skills(ctx)
+				rawSkills, err := r.gw.Skills(ctx)
 				if err != nil {
 					return fmt.Errorf("could not fetch skills: %w", err)
 				}
+				// Fill in missing categories via semantic clustering so skills
+				// group correctly regardless of gateway metadata completeness.
+				skillList := skills.EnrichCategories(rawSkills)
 
-				// Filter
-				if filter != "" {
-					var filtered []client.Skill
-					for _, s := range skills {
-						if strings.Contains(strings.ToLower(s.Name), filter) ||
-							strings.Contains(strings.ToLower(s.Plugin), filter) {
-							filtered = append(filtered, s)
-						}
-					}
-					skills = filtered
-				}
-
-				fmt.Println()
-				if filter != "" {
-					gcolor.Bold.Print(gcolor.HEX("#e8b04a").Sprintf("  Skills matching %q (%d)\n\n", filter, len(skills)))
-				} else {
-					gcolor.Bold.Print(gcolor.HEX("#e8b04a").Sprintf("  Skills (%d)\n\n", len(skills)))
-				}
-
-				if len(skills) == 0 {
+				if len(skillList) == 0 {
+					fmt.Println()
 					fmt.Println(gcolor.HEX("#94a3b8").Sprint("  No skills found."))
 					fmt.Println()
 					return nil
 				}
 
-				// Group by category
-				cats := map[string][]client.Skill{}
-				order := []string{}
-				for _, s := range skills {
-					cat := s.Category
-					if cat == "" {
-						cat = "general"
-					}
-					if _, seen := cats[cat]; !seen {
-						order = append(order, cat)
-					}
-					cats[cat] = append(cats[cat], s)
+				// Category summary: no filter, no explicit "all", page 1.
+				if filter == "" && !showAll && page == 1 {
+					return printSkillCategorySummary(skillList)
 				}
-				for _, cat := range order {
-					// Glass-effect section divider
-					fmt.Printf("  %s %s %s\n",
-						gcolor.HEX("#64748b").Sprint("\u2500\u2500\u2500\u2500"),
-						gcolor.HEX("#e8b04a").Sprint("["+cat+"]"),
-						gcolor.HEX("#64748b").Sprint("\u2500\u2500\u2500\u2500"),
-					)
-					for _, s := range cats[cat] {
-						plugin := ""
-						if s.Plugin != "" {
-							plugin = gcolor.HEX("#94a3b8").Sprintf("(%s)", s.Plugin)
+
+				// Filter by name, category, or plugin.
+				displaySkills := skillList
+				if filter != "" {
+					fl := strings.ToLower(filter)
+					var matched []client.Skill
+					for _, s := range skillList {
+						if strings.Contains(strings.ToLower(s.Name), fl) ||
+							strings.Contains(strings.ToLower(s.Category), fl) ||
+							strings.Contains(strings.ToLower(s.Plugin), fl) {
+							matched = append(matched, s)
 						}
-						fmt.Printf("    %s %s\n",
-							gcolor.HEX("#f4a261").Sprintf("%-40s", s.Name),
-							plugin,
-						)
 					}
+					displaySkills = matched
 				}
-				fmt.Println()
-				return nil
+
+				return printSkillsPage(displaySkills, filter, page)
 			}
 		},
 	}
+}
+
+// ─── /skill helpers ──────────────────────────────────────────────────────────
+
+const skillPageSize = 30
+
+// parseSkillLsArgs extracts (filter, showAll, page) from the args slice.
+// Recognises: "all", "p<N>" or plain integers as page numbers, everything else
+// is joined as the filter term.
+func parseSkillLsArgs(args []string) (filter string, showAll bool, page int) {
+	page = 1
+	var filterParts []string
+	for _, a := range args {
+		al := strings.ToLower(a)
+		if al == "ls" {
+			continue
+		}
+		if al == "all" {
+			showAll = true
+			continue
+		}
+		// p<N> — page number
+		if strings.HasPrefix(al, "p") {
+			if n, err := strconv.Atoi(al[1:]); err == nil && n >= 1 {
+				page = n
+				continue
+			}
+		}
+		// bare integer — page number
+		if n, err := strconv.Atoi(a); err == nil && n >= 1 {
+			page = n
+			continue
+		}
+		filterParts = append(filterParts, a)
+	}
+	filter = strings.Join(filterParts, " ")
+	return
+}
+
+// skillCategoryOrder groups skills by category. Returns (map, ordered keys sorted by count desc).
+func skillCategoryOrder(skills []client.Skill) (map[string][]client.Skill, []string) {
+	cats := map[string][]client.Skill{}
+	for _, s := range skills {
+		cat := s.Category
+		if cat == "" {
+			cat = "general"
+		}
+		cats[cat] = append(cats[cat], s)
+	}
+	keys := make([]string, 0, len(cats))
+	for k := range cats {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		ci, cj := len(cats[keys[i]]), len(cats[keys[j]])
+		if ci != cj {
+			return ci > cj
+		}
+		return keys[i] < keys[j]
+	})
+	return cats, keys
+}
+
+// printSkillCategorySummary renders the landing page for /skill ls (no args).
+func printSkillCategorySummary(skills []client.Skill) error {
+	cats, order := skillCategoryOrder(skills)
+
+	// Count distinct plugins.
+	pluginSet := map[string]struct{}{}
+	for _, s := range skills {
+		if s.Plugin != "" {
+			pluginSet[s.Plugin] = struct{}{}
+		}
+	}
+
+	fmt.Println()
+	gcolor.Bold.Print(gcolor.HEX("#e8b04a").Sprintf(
+		"  Skills  %d total · %d categories · %d plugins\n\n",
+		len(skills), len(order), len(pluginSet),
+	))
+
+	divider := gcolor.HEX("#334155").Sprint(strings.Repeat("─", 66))
+	fmt.Println("  " + divider)
+
+	for _, cat := range order {
+		count := len(cats[cat])
+		bar := buildMiniBar(count, len(skills), 12)
+		fmt.Printf("    %s  %s  %s\n",
+			gcolor.HEX("#f4a261").Sprintf("%-28s", cat),
+			gcolor.HEX("#94a3b8").Sprintf("%3d", count)+" "+gcolor.HEX("#334155").Sprint(bar),
+			gcolor.HEX("#64748b").Sprintf("/skill ls %s", cat),
+		)
+	}
+
+	fmt.Println("  " + divider)
+	fmt.Println()
+	fmt.Printf("    %s  /skill ls all          %s  /skill ls all p2\n",
+		gcolor.HEX("#94a3b8").Sprint("list all:"),
+		gcolor.HEX("#94a3b8").Sprint("next page:"),
+	)
+	fmt.Printf("    %s  /skill search <query>\n",
+		gcolor.HEX("#94a3b8").Sprint("search:  "),
+	)
+	fmt.Println()
+	return nil
+}
+
+// buildMiniBar returns a fixed-width ASCII progress bar.
+func buildMiniBar(count, total, width int) string {
+	if total == 0 || width == 0 {
+		return strings.Repeat("░", width)
+	}
+	filled := count * width / total
+	if filled == 0 && count > 0 {
+		filled = 1
+	}
+	return strings.Repeat("█", filled) + strings.Repeat("░", width-filled)
+}
+
+// printSkillsPage renders a paginated grouped skill list.
+// Pages are built by complete category: a new page starts only after a full
+// category has been rendered, so categories are never split mid-display.
+func printSkillsPage(skills []client.Skill, filter string, page int) error {
+	if len(skills) == 0 {
+		fmt.Println()
+		if filter != "" {
+			fmt.Println(gcolor.HEX("#94a3b8").Sprintf("  No skills matching %q.", filter))
+		} else {
+			fmt.Println(gcolor.HEX("#94a3b8").Sprint("  No skills found."))
+		}
+		fmt.Println()
+		return nil
+	}
+
+	cats, order := skillCategoryOrder(skills)
+
+	// Build pages by grouping complete categories until skillPageSize is reached.
+	type pageSlice struct {
+		cats  []string
+		count int
+	}
+	var pages []pageSlice
+	var cur pageSlice
+	for _, cat := range order {
+		cur.cats = append(cur.cats, cat)
+		cur.count += len(cats[cat])
+		if cur.count >= skillPageSize {
+			pages = append(pages, cur)
+			cur = pageSlice{}
+		}
+	}
+	if len(cur.cats) > 0 {
+		pages = append(pages, cur)
+	}
+
+	totalPages := len(pages)
+	if page < 1 {
+		page = 1
+	}
+	if page > totalPages {
+		page = totalPages
+	}
+	pg := pages[page-1]
+
+	// Count skills on this page.
+	pageCount := 0
+	for _, cat := range pg.cats {
+		pageCount += len(cats[cat])
+	}
+
+	fmt.Println()
+	label := "Skills"
+	if filter != "" {
+		label = fmt.Sprintf("Skills › %s", filter)
+	}
+	pageLabel := ""
+	if totalPages > 1 {
+		pageLabel = fmt.Sprintf(" · page %d of %d", page, totalPages)
+	}
+	gcolor.Bold.Print(gcolor.HEX("#e8b04a").Sprintf("  %s  (%d of %d%s)\n\n", label, pageCount, len(skills), pageLabel))
+
+	// Render each category group.
+	for _, cat := range pg.cats {
+		fmt.Printf("  %s %s %s\n",
+			gcolor.HEX("#334155").Sprint("────"),
+			gcolor.HEX("#e8b04a").Sprint("["+cat+"]"),
+			gcolor.HEX("#334155").Sprint("────────────────────────────────────────────────"),
+		)
+		for _, s := range cats[cat] {
+			plugin := ""
+			if s.Plugin != "" {
+				plugin = gcolor.HEX("#64748b").Sprintf("(%s)", s.Plugin)
+			}
+			fmt.Printf("    %s %s\n",
+				gcolor.HEX("#f4a261").Sprintf("%-40s", truncate(s.Name, 40)),
+				plugin,
+			)
+		}
+	}
+
+	// Footer navigation hints.
+	fmt.Println()
+	if totalPages > 1 {
+		base := "/skill ls"
+		if filter != "" {
+			base += " " + filter
+		} else {
+			base += " all"
+		}
+		if page < totalPages {
+			fmt.Printf("  %s  %s p%d\n",
+				gcolor.HEX("#94a3b8").Sprint("next:"),
+				gcolor.HEX("#64748b").Sprint(base),
+				page+1,
+			)
+		}
+		if page > 1 {
+			fmt.Printf("  %s  %s p%d\n",
+				gcolor.HEX("#94a3b8").Sprint("prev:"),
+				gcolor.HEX("#64748b").Sprint(base),
+				page-1,
+			)
+		}
+	}
+	fmt.Printf("  %s  /skill search <query>\n", gcolor.HEX("#94a3b8").Sprint("search:"))
+	fmt.Println()
+	return nil
 }
 
 // ─── /tools ─────────────────────────────────────────────────────────────────

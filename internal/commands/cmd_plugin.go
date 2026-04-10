@@ -31,7 +31,8 @@ func (r *Registry) pluginCmd() Command {
 				if len(args) < 2 {
 					return fmt.Errorf("usage: /plugin install <git-url>")
 				}
-				return r.pluginInstall(ctx, args[1])
+				noConfirm := len(args) > 2 && (args[2] == "--yes" || args[2] == "-y")
+				return r.pluginInstall(ctx, args[1], noConfirm)
 			case "rm", "remove", "uninstall":
 				if len(args) < 2 {
 					return fmt.Errorf("usage: /plugin rm <name>")
@@ -72,25 +73,40 @@ func (r *Registry) pluginList(ctx context.Context) error {
 }
 
 // pluginInstall clones a plugin from a git URL and rescans.
-func (r *Registry) pluginInstall(ctx context.Context, gitURL string) error {
+// A single URL may yield multiple plugins (monorepo case).
+// noConfirm skips the interactive trust prompt (--yes / -y flag).
+func (r *Registry) pluginInstall(ctx context.Context, gitURL string, noConfirm bool) error {
 	fmt.Println()
 	fmt.Println(gcolor.HEX("#94a3b8").Sprintf("  Cloning %s ...", gitURL))
 
-	dest, err := plugins.Install(gitURL, r.cfg.Plugins.Path)
+	results, err := plugins.InstallConfirmed(gitURL, r.cfg.Plugins.Path, noConfirm)
 	if err != nil {
 		return fmt.Errorf("plugin install: %w", err)
 	}
 
-	activity.Log(activity.CommandRun, fmt.Sprintf("plugin installed from %s → %s", gitURL, dest))
+	for _, res := range results {
+		activity.Log(activity.CommandRun, fmt.Sprintf("plugin installed from %s → %s", gitURL, res.Path))
+	}
 
-	// Rescan plugins to pick up the new one.
+	// Rescan plugins to pick up the new ones.
 	plgs, scanErr := plugins.Scan(r.cfg.Plugins.Path)
 	if scanErr == nil {
 		r.plgs = plgs
 	}
 
 	fmt.Println()
-	gcolor.Bold.Print(gcolor.HEX("#7fb88c").Sprintf("  Plugin installed at %s", dest))
+	if len(results) == 1 {
+		gcolor.Bold.Print(gcolor.HEX("#7fb88c").Sprintf("  Plugin installed at %s", results[0].Path))
+	} else {
+		gcolor.Bold.Print(gcolor.HEX("#7fb88c").Sprintf("  %d plugins installed:", len(results)))
+		fmt.Println()
+		for _, res := range results {
+			fmt.Printf("    %s  %s\n",
+				gcolor.HEX("#f4a261").Sprint(res.Name),
+				gcolor.HEX("#94a3b8").Sprint(res.Path),
+			)
+		}
+	}
 	fmt.Println()
 	fmt.Println()
 	return nil
