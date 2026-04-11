@@ -1,5 +1,5 @@
 BINARY   := dojo
-MODULE   := github.com/DojoGenesis/dojo-cli
+MODULE   := github.com/DojoGenesis/cli
 VERSION  := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 LDFLAGS  := -s -w -X main.version=$(VERSION)
 GOFLAGS  := -trimpath

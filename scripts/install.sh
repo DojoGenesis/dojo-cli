@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="DojoGenesis/dojo-cli"
+REPO="DojoGenesis/cli"
 BINARY="dojo"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 

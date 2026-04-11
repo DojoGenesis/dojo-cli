@@ -12,7 +12,7 @@ The gateway does the heavy work: multi-provider model routing, semantic memory, 
 
 ```bash
 # 1. Install
-git clone https://github.com/DojoGenesis/dojo-cli && cd dojo-cli && make install
+git clone https://github.com/DojoGenesis/cli && cd cli && make install
 
 # 2. Point at your gateway
 echo '{"gateway":{"url":"http://localhost:7340"}}' > ~/.dojo/settings.json
@@ -26,8 +26,8 @@ dojo
 ### From source
 
 ```bash
-git clone https://github.com/DojoGenesis/dojo-cli
-cd dojo-cli
+git clone https://github.com/DojoGenesis/cli
+cd cli
 make install
 ```
 
@@ -36,7 +36,7 @@ Requires Go 1.24+. The binary is installed to `$GOPATH/bin/dojo`.
 ### Pre-built binaries
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/DojoGenesis/dojo-cli/main/scripts/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/DojoGenesis/cli/main/scripts/install.sh | bash
 ```
 
 ### Homebrew (coming soon)
@@ -395,7 +395,7 @@ make build   # build binary to ./bin/dojo
 make all     # vet + test + build
 ```
 
-Module path: `github.com/DojoGenesis/dojo-cli`
+Module path: `github.com/DojoGenesis/cli`
 
 Key dependencies: `charmbracelet/bubbletea`, `charmbracelet/lipgloss`, `fatih/color`, `gookit/color`, `chzyer/readline`.
 

@@ -30,8 +30,7 @@ All acceptance criteria met:
 - [x] Persist session across turns -- `SessionID: r.session` in every `ChatStream` call
 - [x] `/session` command: show, `new`, and resume by ID
 - [x] `UserID` field on `ChatRequest` (line 304)
-
-**Still missing:** `Auth.UserID` in config -- currently UserID is always empty (guest). Low priority; gateway allows guest.
+- [x] `Auth.UserID` in config -- `config.go:26`, env override `DOJO_USER_ID`, tested
 
 ---
 
@@ -90,18 +89,18 @@ All items completed:
 
 | # | Item | Priority | Effort | Acceptance Criteria |
 |---|------|----------|--------|---------------------|
-| 3.1 | `~/.dojo/plugins/` auto-install from CoworkPlugins git URL | P1 | 2-3h | `dojo plugins install <url>` clones CoworkPlugins repo into `~/.dojo/plugins/`, scans for `plugin.json`, registers hooks; `go test ./internal/plugins/... -cover` ≥ 60% |
-| 3.2 | Disposition presets as named profiles in `settings.json` | P1 | 2-3h | `settings.json` supports `"disposition_profiles": {"<name>": {...}}` and `"active_profile": "<name>"`; `/settings profile set <name>` switches active; config loads merged disposition from named profile |
-| 3.3 | `Auth.UserID` in config for non-guest identity | P2 | 1-2h | `~/.dojo/config.yaml` accepts `auth.user_id`; `ChatRequest.UserID` populated when set; `DOJO_USER_ID` env override; gateway receives non-empty UserID for authenticated sessions |
 | 3.4 | DAG construction from natural language | P3 | 4-6h | `/run <task> --dag` builds an `ExecutionPlan` client-side via NL parsing before sending to gateway; `OrchestrationDAG()` used for plan submission; live DAG node status displayed via SSE polling |
 
-**Done (removed from Phase 3):**
+**Done:**
 - `dojo --one-shot "task"` flag -- implemented in `cmd/dojo/main.go` lines 79-108
 - Shell completions (`dojo completion zsh|bash|fish`) -- implemented in `cmd/dojo/main.go` lines 117-176
 - Version as `var` not `const` -- `main.go` line 20
 - `/agent dispatch` and `/agent chat` subcommand wiring -- fully implemented in `cmd_agent.go`
 - `/run` command handler -- implemented as MVP in `cmd_workflow.go`
 - Agent persistence across REPL sessions -- `state.AddAgent()` / `state.TouchAgent()` / `state.RecentAgents()` in `internal/state/state.go`
+- `~/.dojo/plugins/` auto-install from git URL -- `installer.go` + `InstallConfirmed()` in `cmd_plugin.go`
+- `Auth.UserID` in config -- `config.go:26`, env override `DOJO_USER_ID`, tested
+- Disposition profiles in `settings.json` -- `DispositionProfiles` map in Config, `/settings profile set|ls|show|create`, `MergeConfigProfiles()`, round-trip tested
 
 ---
 

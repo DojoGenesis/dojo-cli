@@ -3,3 +3,8 @@
 *.db-shm
 *.db-wal
 .DS_Store
+desktop/frontend/node_modules/
+desktop/frontend/dist/
+desktop/frontend/.svelte-kit/
+desktop/frontend/build/
+desktop/build/bin/
