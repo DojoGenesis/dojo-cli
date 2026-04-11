@@ -66,6 +66,30 @@ func SaveDispositionPreset(p DispositionPreset) error {
 	return os.WriteFile(filepath.Join(dir, p.Name+".json"), data, 0600)
 }
 
+// MergeConfigProfiles overlays config-resident profiles on top of the
+// file-based preset list. Config profiles win when names collide.
+// The returned slice is unsorted; callers must not rely on order.
+func MergeConfigProfiles(configProfiles map[string]DispositionPreset, filePresets []DispositionPreset) []DispositionPreset {
+	if len(configProfiles) == 0 {
+		return filePresets
+	}
+	byName := make(map[string]DispositionPreset, len(filePresets)+len(configProfiles))
+	for _, p := range filePresets {
+		byName[p.Name] = p
+	}
+	for name, p := range configProfiles {
+		if p.Name == "" {
+			p.Name = name
+		}
+		byName[p.Name] = p
+	}
+	result := make([]DispositionPreset, 0, len(byName))
+	for _, p := range byName {
+		result = append(result, p)
+	}
+	return result
+}
+
 // mergeBuiltins appends any builtin presets not already present in loaded.
 func mergeBuiltins(loaded []DispositionPreset) []DispositionPreset {
 	names := make(map[string]bool)

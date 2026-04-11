@@ -51,10 +51,11 @@ func (r *Registry) dispositionCmd() Command {
 }
 
 func (r *Registry) dispositionList() error {
-	presets, err := config.LoadDispositionPresets()
+	filePresets, err := config.LoadDispositionPresets()
 	if err != nil {
 		return err
 	}
+	presets := config.MergeConfigProfiles(r.cfg.DispositionProfiles, filePresets)
 	fmt.Println()
 	gcolor.Bold.Print(gcolor.HEX("#e8b04a").Sprintf("  Disposition presets (%d)", len(presets)))
 	fmt.Println()
@@ -90,10 +91,11 @@ func (r *Registry) dispositionSet(name string) error {
 }
 
 func (r *Registry) dispositionShow(name string) error {
-	presets, err := config.LoadDispositionPresets()
+	filePresets, err := config.LoadDispositionPresets()
 	if err != nil {
 		return err
 	}
+	presets := config.MergeConfigProfiles(r.cfg.DispositionProfiles, filePresets)
 	for _, p := range presets {
 		if p.Name == name {
 			fmt.Println()
@@ -117,9 +119,16 @@ func (r *Registry) dispositionCreate(name, pacing, depth, tone, initiative strin
 		Tone:       tone,
 		Initiative: initiative,
 	}
+	// Save to file-based presets (backward compat).
 	if err := config.SaveDispositionPreset(p); err != nil {
 		return err
 	}
+	// Also persist to settings.json so the profile survives without the file.
+	if r.cfg.DispositionProfiles == nil {
+		r.cfg.DispositionProfiles = make(map[string]config.DispositionPreset)
+	}
+	r.cfg.DispositionProfiles[name] = p
+	_ = r.cfg.Save()
 	activity.Log(activity.CommandRun, "disposition create "+name)
 	fmt.Println()
 	gcolor.HEX("#7fb88c").Printf("  Preset %q saved\n", name)

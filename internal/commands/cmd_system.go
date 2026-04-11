@@ -105,8 +105,8 @@ func (r *Registry) settingsCmd() Command {
 	return Command{
 		Name:    "settings",
 		Aliases: []string{"config", "cfg"},
-		Usage:   "/settings [providers|set <provider> <key>]",
-		Short:   "Show active config and settings, or manage provider keys",
+		Usage:   "/settings [effective|providers|set <provider> <key>|profile [ls|set|show|create]]",
+		Short:   "Show active config and settings, or manage provider keys and disposition profiles",
 		Run: func(ctx context.Context, args []string) error {
 			if len(args) == 0 {
 				fmt.Println()
@@ -160,11 +160,44 @@ func (r *Registry) settingsCmd() Command {
 				printKV("provider", provider)
 				fmt.Println()
 
+			case "profile", "profiles":
+				return r.settingsProfile(args[1:])
+
 			default:
-				return fmt.Errorf("unknown settings subcommand %q — use: effective, providers, set", sub)
+				return fmt.Errorf("unknown settings subcommand %q — use: effective, providers, set, profile", sub)
 			}
 			return nil
 		},
+	}
+}
+
+// settingsProfile handles /settings profile [ls|set <name>|show <name>|create <name> ...]
+// Delegates to the disposition handlers so both /disposition and /settings profile
+// operate on the same state.
+func (r *Registry) settingsProfile(args []string) error {
+	if len(args) == 0 {
+		return r.dispositionList()
+	}
+	switch strings.ToLower(args[0]) {
+	case "ls", "list":
+		return r.dispositionList()
+	case "set":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: /settings profile set <name>")
+		}
+		return r.dispositionSet(args[1])
+	case "show":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: /settings profile show <name>")
+		}
+		return r.dispositionShow(args[1])
+	case "create":
+		if len(args) < 6 {
+			return fmt.Errorf("usage: /settings profile create <name> <pacing> <depth> <tone> <initiative>")
+		}
+		return r.dispositionCreate(args[1], args[2], args[3], args[4], args[5])
+	default:
+		return fmt.Errorf("unknown profile subcommand %q — use: ls, set, show, create", args[0])
 	}
 }
 

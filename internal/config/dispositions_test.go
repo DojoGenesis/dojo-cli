@@ -97,6 +97,112 @@ func TestSaveAndLoadPreset(t *testing.T) {
 	}
 }
 
+// ─── MergeConfigProfiles ────────────────────────────────────────────────────
+
+func TestMergeConfigProfiles_EmptyMap(t *testing.T) {
+	filePresets := BuiltinPresets()
+	result := MergeConfigProfiles(nil, filePresets)
+	if len(result) != len(filePresets) {
+		t.Fatalf("MergeConfigProfiles(nil, builtins) returned %d presets, want %d", len(result), len(filePresets))
+	}
+}
+
+func TestMergeConfigProfiles_ConfigWins(t *testing.T) {
+	filePresets := BuiltinPresets()
+	// Override builtin "focused" and add a new "custom" preset via config.
+	configProfiles := map[string]DispositionPreset{
+		"focused": {Name: "focused", Pacing: "slow", Depth: "exhaustive", Tone: "warm", Initiative: "autonomous"},
+		"custom":  {Name: "custom", Pacing: "swift", Depth: "concise", Tone: "direct", Initiative: "reactive"},
+	}
+	result := MergeConfigProfiles(configProfiles, filePresets)
+
+	// Should have 4 builtins with "focused" overridden + 1 new = 5 total.
+	if len(result) != 5 {
+		t.Fatalf("MergeConfigProfiles() returned %d presets, want 5", len(result))
+	}
+
+	byName := make(map[string]DispositionPreset)
+	for _, p := range result {
+		byName[p.Name] = p
+	}
+
+	if p, ok := byName["focused"]; !ok || p.Pacing != "slow" {
+		t.Errorf("config profile did not override builtin focused: got %+v", byName["focused"])
+	}
+	if _, ok := byName["custom"]; !ok {
+		t.Error("custom profile from config not in merged result")
+	}
+}
+
+func TestMergeConfigProfiles_EmptyNameUsesKey(t *testing.T) {
+	// Preset stored in map with empty Name field — key should be used as name.
+	configProfiles := map[string]DispositionPreset{
+		"mynew": {Pacing: "swift", Depth: "concise", Tone: "direct", Initiative: "reactive"},
+	}
+	result := MergeConfigProfiles(configProfiles, BuiltinPresets())
+	byName := make(map[string]DispositionPreset)
+	for _, p := range result {
+		byName[p.Name] = p
+	}
+	if p, ok := byName["mynew"]; !ok || p.Pacing != "swift" {
+		t.Errorf("preset with empty Name not keyed correctly: %+v", byName)
+	}
+}
+
+// ─── Config.DispositionProfiles round-trip ───────────────────────────────────
+
+func TestConfig_DispositionProfiles_RoundTrip(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+
+	cfg := &Config{
+		Gateway: GatewayConfig{URL: DefaultGatewayURL, Timeout: "60s"},
+		Defaults: DefaultsConfig{
+			Disposition: "sprint",
+		},
+		DispositionProfiles: map[string]DispositionPreset{
+			"sprint": {Name: "sprint", Pacing: "swift", Depth: "concise", Tone: "direct", Initiative: "reactive"},
+		},
+	}
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("cfg.Save() error: %v", err)
+	}
+
+	loaded, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error after save: %v", err)
+	}
+	if loaded.Defaults.Disposition != "sprint" {
+		t.Errorf("Defaults.Disposition = %q, want sprint", loaded.Defaults.Disposition)
+	}
+	if p, ok := loaded.DispositionProfiles["sprint"]; !ok || p.Pacing != "swift" {
+		t.Errorf("DispositionProfiles[sprint] not preserved: %+v", loaded.DispositionProfiles)
+	}
+}
+
+func TestConfig_Validate_CustomProfileAllowed(t *testing.T) {
+	cfg := &Config{
+		Gateway: GatewayConfig{URL: DefaultGatewayURL, Timeout: "60s"},
+		Defaults: DefaultsConfig{Disposition: "myprofile"},
+		DispositionProfiles: map[string]DispositionPreset{
+			"myprofile": {Name: "myprofile", Pacing: "measured", Depth: "thorough", Tone: "warm", Initiative: "proactive"},
+		},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate() rejected custom profile name: %v", err)
+	}
+}
+
+func TestConfig_Validate_UnknownDispositionRejected(t *testing.T) {
+	cfg := &Config{
+		Gateway:  GatewayConfig{URL: DefaultGatewayURL, Timeout: "60s"},
+		Defaults: DefaultsConfig{Disposition: "unknownxyz"},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("Validate() should reject unknown disposition not in profiles")
+	}
+}
+
 // ─── mergeBuiltins ──────────────────────────────────────────────────────────
 
 func TestMergeBuiltins(t *testing.T) {

@@ -16,10 +16,11 @@ const DefaultGatewayURL = "http://localhost:7340"
 
 // Config is the dojo CLI configuration, loaded from ~/.dojo/settings.json.
 type Config struct {
-	Gateway  GatewayConfig  `json:"gateway"`
-	Plugins  PluginsConfig  `json:"plugins"`
-	Defaults DefaultsConfig `json:"defaults"`
-	Auth     AuthConfig     `json:"auth,omitempty"`
+	Gateway             GatewayConfig                 `json:"gateway"`
+	Plugins             PluginsConfig                 `json:"plugins"`
+	Defaults            DefaultsConfig                `json:"defaults"`
+	Auth                AuthConfig                    `json:"auth,omitempty"`
+	DispositionProfiles map[string]DispositionPreset  `json:"disposition_profiles,omitempty"`
 }
 
 type AuthConfig struct {
@@ -111,12 +112,14 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	// Disposition must be a known value (or empty).
+	// Disposition must be a builtin OR a known custom profile (or empty).
 	if !validDispositions[c.Defaults.Disposition] {
-		return fmt.Errorf(
-			"invalid defaults.disposition %q: must be one of focused, balanced, exploratory, deliberate, or empty",
-			c.Defaults.Disposition,
-		)
+		if _, ok := c.DispositionProfiles[c.Defaults.Disposition]; !ok {
+			return fmt.Errorf(
+				"invalid defaults.disposition %q: must be one of focused, balanced, exploratory, deliberate, or a custom profile",
+				c.Defaults.Disposition,
+			)
+		}
 	}
 
 	return nil
