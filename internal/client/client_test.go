@@ -664,9 +664,14 @@ func TestModels_500_ReturnsError(t *testing.T) {
 }
 
 func TestModels_Success(t *testing.T) {
-	resp := modelsEnvelope{
-		Models: []Model{{ID: "claude-3", Provider: "anthropic", Name: "Claude 3"}},
-		Count:  1,
+	// Gateway returns OpenAI-compatible format: {"object":"list","data":[...]}
+	resp := openAIModelsEnvelope{
+		Data: []struct {
+			ID      string `json:"id"`
+			OwnedBy string `json:"owned_by"`
+		}{
+			{ID: "claude-3", OwnedBy: "anthropic"},
+		},
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -679,7 +684,7 @@ func TestModels_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Models() error: %v", err)
 	}
-	if len(models) != 1 || models[0].ID != "claude-3" {
+	if len(models) != 1 || models[0].ID != "claude-3" || models[0].Provider != "anthropic" {
 		t.Errorf("unexpected models: %v", models)
 	}
 }

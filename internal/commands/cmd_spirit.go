@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/DojoGenesis/dojo-cli/internal/art"
-	"github.com/DojoGenesis/dojo-cli/internal/spirit"
-	"github.com/DojoGenesis/dojo-cli/internal/state"
+	"github.com/DojoGenesis/cli/internal/art"
+	"github.com/DojoGenesis/cli/internal/spirit"
+	"github.com/DojoGenesis/cli/internal/state"
 	gcolor "github.com/gookit/color"
 )
 

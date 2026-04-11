@@ -10,9 +10,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/DojoGenesis/dojo-cli/internal/client"
-	"github.com/DojoGenesis/dojo-cli/internal/config"
-	"github.com/DojoGenesis/dojo-cli/internal/repl"
+	"github.com/DojoGenesis/cli/internal/client"
+	"github.com/DojoGenesis/cli/internal/config"
+	"github.com/DojoGenesis/cli/internal/repl"
 	gcolor "github.com/gookit/color"
 )
 

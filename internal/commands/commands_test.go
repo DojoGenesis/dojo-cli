@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/DojoGenesis/dojo-cli/internal/client"
-	"github.com/DojoGenesis/dojo-cli/internal/config"
-	"github.com/DojoGenesis/dojo-cli/internal/guide"
-	"github.com/DojoGenesis/dojo-cli/internal/plugins"
+	"github.com/DojoGenesis/cli/internal/client"
+	"github.com/DojoGenesis/cli/internal/config"
+	"github.com/DojoGenesis/cli/internal/guide"
+	"github.com/DojoGenesis/cli/internal/plugins"
 )
 
 // testRegistry builds a minimal Registry suitable for tests that do not call gw.

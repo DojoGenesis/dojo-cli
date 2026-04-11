@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/DojoGenesis/dojo-cli/internal/config"
+	"github.com/DojoGenesis/cli/internal/config"
 )
 
 // EntryType classifies the kind of activity recorded.

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/DojoGenesis/dojo-cli/internal/activity"
-	"github.com/DojoGenesis/dojo-cli/internal/config"
+	"github.com/DojoGenesis/cli/internal/activity"
+	"github.com/DojoGenesis/cli/internal/config"
 	gcolor "github.com/gookit/color"
 )
 

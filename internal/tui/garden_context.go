@@ -6,7 +6,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/DojoGenesis/dojo-cli/internal/client"
+	"github.com/DojoGenesis/cli/internal/client"
 )
 
 // ─── Garden Context ─────────────────────────────────────────────────────────

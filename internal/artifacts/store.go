@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/DojoGenesis/dojo-cli/internal/config"
+	"github.com/DojoGenesis/cli/internal/config"
 )
 
 // ArtifactType identifies the category of a persisted artifact.

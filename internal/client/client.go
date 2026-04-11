@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/DojoGenesis/dojo-cli/internal/trace"
+	"github.com/DojoGenesis/cli/internal/trace"
 )
 
 // Client talks to an AgenticGateway instance.
@@ -102,27 +102,36 @@ func (c *Client) Providers(ctx context.Context) ([]Provider, error) {
 }
 
 // Model is a single entry in the /v1/models response.
-// Server: server/handlers/models.go → provider.ModelInfo
-// Server returns: {"models": [...], "count": N}
 type Model struct {
 	ID       string `json:"id"`
 	Provider string `json:"provider"`
 	Name     string `json:"name"`
 }
 
-// modelsEnvelope is the top-level wrapper for GET /v1/models.
-type modelsEnvelope struct {
-	Models []Model `json:"models"`
-	Count  int     `json:"count"`
+// openAIModelsEnvelope matches the gateway's OpenAI-compatible /v1/models response.
+// Server returns: {"object": "list", "data": [{"id": "...", "owned_by": "..."}]}
+type openAIModelsEnvelope struct {
+	Data []struct {
+		ID      string `json:"id"`
+		OwnedBy string `json:"owned_by"`
+	} `json:"data"`
 }
 
-// Models fetches GET /v1/models.
+// Models fetches GET /v1/models and maps the OpenAI-compatible response to Model.
 func (c *Client) Models(ctx context.Context) ([]Model, error) {
-	var r modelsEnvelope
+	var r openAIModelsEnvelope
 	if err := c.get(ctx, "/v1/models", &r); err != nil {
 		return nil, err
 	}
-	return r.Models, nil
+	models := make([]Model, 0, len(r.Data))
+	for _, m := range r.Data {
+		models = append(models, Model{
+			ID:       m.ID,
+			Provider: m.OwnedBy,
+			Name:     m.ID,
+		})
+	}
+	return models, nil
 }
 
 // ─── Tools ───────────────────────────────────────────────────────────────────

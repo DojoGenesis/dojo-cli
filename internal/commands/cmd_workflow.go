@@ -15,11 +15,11 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/DojoGenesis/dojo-cli/internal/art"
-	"github.com/DojoGenesis/dojo-cli/internal/client"
-	"github.com/DojoGenesis/dojo-cli/internal/orchestration"
-	"github.com/DojoGenesis/dojo-cli/internal/skills"
-	"github.com/DojoGenesis/dojo-cli/internal/tui"
+	"github.com/DojoGenesis/cli/internal/art"
+	"github.com/DojoGenesis/cli/internal/client"
+	"github.com/DojoGenesis/cli/internal/orchestration"
+	"github.com/DojoGenesis/cli/internal/skills"
+	"github.com/DojoGenesis/cli/internal/tui"
 	gcolor "github.com/gookit/color"
 )
 

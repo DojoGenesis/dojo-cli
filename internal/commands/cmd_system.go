@@ -11,9 +11,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/DojoGenesis/dojo-cli/internal/bootstrap"
-	"github.com/DojoGenesis/dojo-cli/internal/config"
-	"github.com/DojoGenesis/dojo-cli/internal/tui"
+	"github.com/DojoGenesis/cli/internal/bootstrap"
+	"github.com/DojoGenesis/cli/internal/config"
+	"github.com/DojoGenesis/cli/internal/tui"
 	gcolor "github.com/gookit/color"
 )
 

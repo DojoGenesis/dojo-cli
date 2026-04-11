@@ -10,9 +10,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/DojoGenesis/dojo-cli/internal/activity"
-	"github.com/DojoGenesis/dojo-cli/internal/artifacts"
-	"github.com/DojoGenesis/dojo-cli/internal/project"
+	"github.com/DojoGenesis/cli/internal/activity"
+	"github.com/DojoGenesis/cli/internal/artifacts"
+	"github.com/DojoGenesis/cli/internal/project"
 	gcolor "github.com/gookit/color"
 )
 

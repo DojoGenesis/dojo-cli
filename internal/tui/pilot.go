@@ -11,8 +11,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/DojoGenesis/dojo-cli/internal/client"
-	"github.com/DojoGenesis/dojo-cli/internal/telemetry"
+	"github.com/DojoGenesis/cli/internal/client"
+	"github.com/DojoGenesis/cli/internal/telemetry"
 )
 
 // ─── Dojo Genesis Color Palette ─────────────────────────────────────────────

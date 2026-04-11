@@ -7,11 +7,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/DojoGenesis/dojo-cli/internal/activity"
-	"github.com/DojoGenesis/dojo-cli/internal/client"
-	"github.com/DojoGenesis/dojo-cli/internal/config"
-	"github.com/DojoGenesis/dojo-cli/internal/hooks"
-	"github.com/DojoGenesis/dojo-cli/internal/plugins"
+	"github.com/DojoGenesis/cli/internal/activity"
+	"github.com/DojoGenesis/cli/internal/client"
+	"github.com/DojoGenesis/cli/internal/config"
+	"github.com/DojoGenesis/cli/internal/hooks"
+	"github.com/DojoGenesis/cli/internal/plugins"
 )
 
 // Registry maps slash command names to handler functions.

@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/DojoGenesis/dojo-cli/internal/client"
-	"github.com/DojoGenesis/dojo-cli/internal/state"
+	"github.com/DojoGenesis/cli/internal/client"
+	"github.com/DojoGenesis/cli/internal/state"
 	gcolor "github.com/gookit/color"
 )
 

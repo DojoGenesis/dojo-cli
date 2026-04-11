@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/DojoGenesis/dojo-cli/internal/config"
+	"github.com/DojoGenesis/cli/internal/config"
 )
 
 // Phase represents the current lifecycle stage of a project.

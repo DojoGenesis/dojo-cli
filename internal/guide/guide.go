@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/DojoGenesis/dojo-cli/internal/state"
+	"github.com/DojoGenesis/cli/internal/state"
 )
 
 // Step is one interactive step in a guide.

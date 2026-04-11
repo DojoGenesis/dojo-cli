@@ -1,4 +1,4 @@
-module github.com/DojoGenesis/dojo-cli
+module github.com/DojoGenesis/cli
 
 go 1.24.0
 

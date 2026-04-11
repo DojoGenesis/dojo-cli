@@ -8,8 +8,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/DojoGenesis/dojo-cli/internal/config"
-	"github.com/DojoGenesis/dojo-cli/internal/spirit"
+	"github.com/DojoGenesis/cli/internal/config"
+	"github.com/DojoGenesis/cli/internal/spirit"
 )
 
 // GuideProgress tracks the user's active and completed guides.

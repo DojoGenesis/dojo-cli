@@ -57,7 +57,8 @@ func init() {
 			DisplayName: "Kimi (Moonshot)",
 			EnvKey:      "KIMI_API_KEY",
 			Models: []KnownModel{
-				{ID: "kimi-latest", DisplayName: "Kimi Latest", Notes: "most capable"},
+				{ID: "kimi-k2.5", DisplayName: "Kimi K2.5", Notes: "most capable"},
+				{ID: "kimi-k2", DisplayName: "Kimi K2", Notes: "balanced"},
 				{ID: "moonshot-v1-128k", DisplayName: "Moonshot v1 128K", Notes: "long context"},
 				{ID: "moonshot-v1-32k", DisplayName: "Moonshot v1 32K", Notes: "balanced"},
 				{ID: "moonshot-v1-8k", DisplayName: "Moonshot v1 8K", Notes: "fast"},

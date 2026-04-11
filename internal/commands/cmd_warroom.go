@@ -10,7 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/DojoGenesis/dojo-cli/internal/tui"
+	"github.com/DojoGenesis/cli/internal/tui"
 )
 
 // warroomCmd returns the /warroom command.

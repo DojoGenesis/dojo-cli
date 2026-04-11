@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/DojoGenesis/dojo-cli/internal/plugins"
+	"github.com/DojoGenesis/cli/internal/plugins"
 )
 
 // ─── New() safety ─────────────────────────────────────────────────────────────

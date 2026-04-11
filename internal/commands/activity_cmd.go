@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/DojoGenesis/dojo-cli/internal/activity"
+	"github.com/DojoGenesis/cli/internal/activity"
 	gcolor "github.com/gookit/color"
 )
 

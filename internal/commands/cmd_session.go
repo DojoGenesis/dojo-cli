@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/DojoGenesis/dojo-cli/internal/state"
+	"github.com/DojoGenesis/cli/internal/state"
 	gcolor "github.com/gookit/color"
 )
 

@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/DojoGenesis/dojo-cli/internal/client"
+	"github.com/DojoGenesis/cli/internal/client"
 	gcolor "github.com/gookit/color"
 )
 

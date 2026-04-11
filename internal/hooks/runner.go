@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/DojoGenesis/dojo-cli/internal/plugins"
+	"github.com/DojoGenesis/cli/internal/plugins"
 )
 
 // Event names that dojo-cli fires.

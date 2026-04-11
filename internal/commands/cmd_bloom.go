@@ -8,9 +8,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/DojoGenesis/dojo-cli/internal/spirit"
-	"github.com/DojoGenesis/dojo-cli/internal/state"
-	"github.com/DojoGenesis/dojo-cli/internal/tui"
+	"github.com/DojoGenesis/cli/internal/spirit"
+	"github.com/DojoGenesis/cli/internal/state"
+	"github.com/DojoGenesis/cli/internal/tui"
 )
 
 // bloomCmd returns the /bloom command.

@@ -13,8 +13,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/DojoGenesis/dojo-cli/internal/art"
-	"github.com/DojoGenesis/dojo-cli/internal/spirit"
+	"github.com/DojoGenesis/cli/internal/art"
+	"github.com/DojoGenesis/cli/internal/spirit"
 )
 
 // ─── Bloom tick message ────────────────────────────────────────────────────
