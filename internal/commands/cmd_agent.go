@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/DojoGenesis/cli/internal/client"
@@ -54,8 +55,12 @@ func (r *Registry) agentCmd() Command {
 				fmt.Println()
 				fmt.Println(gcolor.HEX("#94a3b8").Sprintf("  Creating agent (mode: %s)...", mode))
 
+				wd, wdErr := os.Getwd()
+				if wdErr != nil {
+					wd = "."
+				}
 				agentResp, err := r.gw.CreateAgent(ctx, client.CreateAgentRequest{
-					WorkspaceRoot: ".",
+					WorkspaceRoot: wd,
 					ActiveMode:    mode,
 				})
 				if err != nil {

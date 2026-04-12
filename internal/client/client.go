@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -515,7 +516,11 @@ type CreateAgentResponse struct {
 // CreateAgent creates a new agent in the gateway and returns its ID.
 func (c *Client) CreateAgent(ctx context.Context, req CreateAgentRequest) (*CreateAgentResponse, error) {
 	if req.WorkspaceRoot == "" {
-		req.WorkspaceRoot = "."
+		wd, err := os.Getwd()
+		if err != nil {
+			wd = "."
+		}
+		req.WorkspaceRoot = wd
 	}
 	var r CreateAgentResponse
 	if err := c.post(ctx, "/v1/gateway/agents", req, &r); err != nil {
