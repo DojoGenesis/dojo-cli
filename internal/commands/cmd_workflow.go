@@ -119,6 +119,75 @@ func (r *Registry) runCmd() Command {
 				}
 			}
 
+			// Check for --dag flag: strip it from args and force NL-based DAG mode.
+			forceDAG := false
+			{
+				var filtered []string
+				for _, a := range args {
+					if a == "--dag" {
+						forceDAG = true
+					} else {
+						filtered = append(filtered, a)
+					}
+				}
+				if forceDAG {
+					args = filtered
+					task = strings.Join(args, " ")
+				}
+			}
+
+			if forceDAG {
+				plan := orchestration.ParseTaskToDAG(task)
+
+				fmt.Println()
+				fmt.Println(gcolor.HEX("#94a3b8").Sprintf("  NL-DAG plan: %s", plan.Name))
+				fmt.Println(gcolor.HEX("#94a3b8").Sprintf("  Nodes (%d):", len(plan.DAG)))
+				for _, node := range plan.DAG {
+					deps := ""
+					if len(node.DependsOn) > 0 {
+						deps = gcolor.HEX("#64748b").Sprintf("  ← %s", strings.Join(node.DependsOn, ", "))
+					}
+					fmt.Printf("    %s  %s%s\n",
+						gcolor.HEX("#f4a261").Sprintf("%-10s", node.ID),
+						gcolor.White.Sprint(node.ToolName),
+						deps,
+					)
+				}
+				fmt.Println()
+
+				userID := r.cfg.Auth.UserID
+				status, err := r.gw.Orchestrate(ctx, client.OrchestrateRequest{
+					Plan:   plan,
+					UserID: userID,
+				})
+				if err == nil {
+					printKV("execution_id", status.ExecutionID)
+					printKV("status", colorStatus(status.Status))
+					fmt.Println()
+
+					// Poll DAG until terminal state.
+					for {
+						dag, pollErr := r.gw.OrchestrationDAG(ctx, status.ExecutionID)
+						if pollErr != nil {
+							fmt.Println(gcolor.HEX("#ef4444").Sprintf("  poll error: %v", pollErr))
+							break
+						}
+						r.printDAGNodes(dag.Nodes)
+						if dag.Status == "completed" || dag.Status == "failed" {
+							fmt.Println()
+							printKV("result", colorStatus(dag.Status))
+							fmt.Println()
+							return nil
+						}
+						time.Sleep(800 * time.Millisecond)
+					}
+					return nil
+				}
+				// Orchestration failed — fall through to ChatStream MVP.
+				fmt.Println(gcolor.HEX("#94a3b8").Sprintf("  orchestration unavailable (%v), falling back to chat", err))
+				fmt.Println()
+			}
+
 			// Try client-side DAG template matching first.
 			if tmpl := orchestration.MatchTemplate(task); tmpl != nil {
 				plan := tmpl.Build(task)
