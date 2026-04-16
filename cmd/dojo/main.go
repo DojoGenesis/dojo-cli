@@ -156,6 +156,7 @@ _dojo() {
     '/sensei:koan from the sensei'
     '/card:dojo profile card'
     '/warroom:scout vs challenger debate'
+    '/craft:DojoCraft practitioner workbench'
   )
   _describe 'command' commands
 }
@@ -163,7 +164,7 @@ compdef _dojo dojo
 `)
 	case "bash":
 		fmt.Print(`_dojo_completions() {
-  COMPREPLY=($(compgen -W "/help /health /home /model /tools /agent /skill /session /run /garden /trail /snapshot /trace /pilot /practice /projects /project /hooks /settings /guide /code /bloom /apps /workflow /doc /init /activity /plugin /disposition /telemetry /sensei /card /warroom exit" -- "${COMP_WORDS[COMP_CWORD]}"))
+  COMPREPLY=($(compgen -W "/help /health /home /model /tools /agent /skill /session /run /garden /trail /snapshot /trace /pilot /practice /projects /project /hooks /settings /guide /code /bloom /apps /workflow /doc /init /activity /plugin /disposition /telemetry /sensei /card /warroom /craft exit" -- "${COMP_WORDS[COMP_CWORD]}"))
 }
 complete -F _dojo_completions dojo
 `)
@@ -201,6 +202,7 @@ complete -c dojo -f -a "/telemetry" -d "observability telemetry"
 complete -c dojo -f -a "/sensei" -d "koan from the sensei"
 complete -c dojo -f -a "/card" -d "dojo profile card"
 complete -c dojo -f -a "/warroom" -d "scout vs challenger debate"
+complete -c dojo -f -a "/craft" -d "DojoCraft practitioner workbench"
 `)
 	default:
 		fmt.Fprintf(os.Stderr, "dojo: unknown shell %q (supported: bash, zsh, fish)\n", shell)
