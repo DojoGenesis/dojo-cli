@@ -4,6 +4,31 @@ All notable changes to the Dojo CLI are documented here.
 
 This project adheres to [Keep a Changelog v1.1.0](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- `/craft` command group — DojoCraft practitioner workbench with 15 offline + online test cases (`1036875`, `ad4ece2`)
+- Desktop scaffold (`cli/desktop/`) hibernated pending CLI v1.0.0 ship; Wails v2 + Svelte 5 build is clean (`8f456a2`, `4b5eb7c`)
+
+### Changed
+
+- goreleaser brew token: corrected cross-repo homebrew-tap push (`6995170`)
+- Embed anchor committed for `desktop/frontend/dist` to satisfy CI (`af08841`)
+
+### Fixed
+
+- Atomic writes for all config/state JSON files — eliminates partial-write corruption (`e58945f`)
+- Redact secret positional args in activity log (`a965ac4`)
+- Enforce project-root boundary in `/code` read — prevents path traversal (`abeb071`)
+- smoke-craft.sh: use REPL stdin pipe instead of `--one-shot` flag (`956b970`)
+
+### Docs
+
+- README: fill gaps in coverage (`190e24e`)
+
+---
+
 ## [1.0.0] — 2026-04-12
 
 ### Added
